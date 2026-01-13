@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+
+
+# Node
+node_modules
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Env/secrets
+.env
+*.pem
+*.key
