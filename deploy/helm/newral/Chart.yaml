@@ -1,0 +1,6 @@
+apiVersion: v2
+name: newral
+description: Newral platform chart (skeleton)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

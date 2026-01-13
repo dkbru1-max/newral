@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: newral-config
+  namespace: newral
+data:
+  max_devices_per_user: "5"

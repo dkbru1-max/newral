@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:17.7-bookworm
-    container_name: newral-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -10,15 +9,17 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      - ./db/migrations:/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - newral
 
   redis:
     image: redis:7.4.7-bookworm
-    container_name: newral-redis
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
@@ -29,25 +30,25 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - newral
 
   kafka:
     image: apache/kafka:4.1.1
-    container_name: newral-kafka
     hostname: kafka
     ports:
-      - "9092:9092"   # внешний доступ с хоста (localhost:9092)
+      - "9092:19092"   # доступ с хоста, внутри сети kafka:19092
     environment:
       # KRaft combined mode (broker+controller в одном контейнере)
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
 
-      # 3 listener'а:
+      # 2 listener'а:
       #  - PLAINTEXT (внутренний, для docker-сети) на 19092
-      #  - PLAINTEXT_HOST (внешний, для хоста) на 9092
       #  - CONTROLLER (внутренний контроллер) на 9093
-      KAFKA_LISTENERS: "PLAINTEXT://:19092,PLAINTEXT_HOST://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_LISTENERS: "PLAINTEXT://:19092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:19092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
@@ -63,10 +64,16 @@ services:
       KAFKA_LOG_DIRS: "/var/lib/kafka/data"
     volumes:
       - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - newral
 
   minio:
     image: minio/minio:latest
-    container_name: newral-minio
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -76,9 +83,81 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     volumes:
       - minio_data:/data
+    networks:
+      - newral
+
+  identity-service:
+    build:
+      context: ./services/identity-service
+    environment:
+      PORT: 8080
+      MAX_DEVICES_PER_USER: 5
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - minio
+    networks:
+      - newral
+
+  scheduler-service:
+    build:
+      context: ./services/scheduler-service
+    environment:
+      PORT: 8080
+      AI_MODE: AI_OFF
+      POLICY_MAX_CONCURRENT_TASKS: 10
+      POLICY_MAX_DAILY_BUDGET: 100.0
+      POLICY_RECHECK_THRESHOLD: 0.2
+    ports:
+      - "8082:8080"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - minio
+    networks:
+      - newral
+
+  validator-service:
+    build:
+      context: ./services/validator-service
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "8083:8080"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - minio
+    networks:
+      - newral
+
+  telemetry-service:
+    build:
+      context: ./services/telemetry-service
+    environment:
+      PORT: 8080
+    ports:
+      - "8084:8080"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - minio
+    networks:
+      - newral
 
 volumes:
   pg_data:
   redis_data:
   kafka_data:
   minio_data:
+
+networks:
+  newral:
+    name: newral

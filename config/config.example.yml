@@ -1,0 +1,6 @@
+ai_mode: AI_OFF
+
+policy:
+  max_concurrent_tasks: 10
+  max_daily_budget: 100.0
+  recheck_threshold: 0.2

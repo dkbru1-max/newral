@@ -1,0 +1,5 @@
+node_id = "node-1"
+scheduler_url = "http://localhost:8082"
+heartbeat_interval_secs = 10
+poll_interval_secs = 5
+runner_sleep_secs = 2
