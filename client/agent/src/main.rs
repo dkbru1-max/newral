@@ -537,9 +537,14 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
         "stderr",
     ));
 
+    let child_wait = async {
+        let mut guard = child.lock().await;
+        guard.wait().await.map_err(|err| format!("wait: {err}"))
+    };
+
     let status = tokio::select! {
-        result = child.lock().await.wait() => {
-            result.map_err(|err| format!("wait: {err}"))?
+        result = child_wait => {
+            result?
         }
         _ = sleep(sandbox.timeout) => {
             // Timeout reached: terminate the process.
