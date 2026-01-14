@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
 use tokio_postgres::{error::SqlState, Client, NoTls};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -17,7 +18,7 @@ use crate::policy::{PolicyConfig, PolicyDecision, PolicyEngine, ProposalSource, 
 #[derive(Clone)]
 struct AppState {
     policy: Arc<PolicyEngine>,
-    db: Arc<Client>,
+    db: Arc<Mutex<Client>>,
 }
 
 #[allow(dead_code)]
@@ -265,7 +266,7 @@ async fn main() {
     let policy = PolicyEngine::new(policy_config);
     let state = AppState {
         policy: Arc::new(policy),
-        db: Arc::new(db),
+        db: Arc::new(Mutex::new(db)),
     };
 
     let app = Router::new()
@@ -336,7 +337,9 @@ async fn request_task(
         PolicyDecision::Limited {
             granted_tasks,
             reasons,
-        } => match fetch_demo_task(&state).await {
+        } => {
+            let mut db = state.db.lock().await;
+            match fetch_demo_task(&mut db).await {
             Ok(Some(task)) => (
                 StatusCode::OK,
                 Json(TaskResponse {
@@ -372,8 +375,11 @@ async fn request_task(
                 }),
             )
                 .into_response(),
-        },
-        PolicyDecision::Allowed { reasons } => match fetch_demo_task(&state).await {
+            }
+        }
+        PolicyDecision::Allowed { reasons } => {
+            let mut db = state.db.lock().await;
+            match fetch_demo_task(&mut db).await {
             Ok(Some(task)) => (
                 StatusCode::OK,
                 Json(TaskResponse {
@@ -409,7 +415,8 @@ async fn request_task(
                 }),
             )
                 .into_response(),
-        },
+            }
+        }
     }
 }
 
@@ -442,7 +449,8 @@ async fn submit_task(
             .into_response();
     };
 
-    let project = match select_project_by_id(&state.db, project_id).await {
+    let mut db = state.db.lock().await;
+    let project = match select_project_by_id(&mut db, project_id).await {
         Ok(Some(project)) => project,
         Ok(None) => {
             return (
@@ -468,7 +476,7 @@ async fn submit_task(
         }
     };
 
-    let schema = match schema_name_for_project(&state.db, &project).await {
+    let schema = match schema_name_for_project(&mut db, &project).await {
         Ok(schema) => schema,
         Err(err) => {
             return (
@@ -487,7 +495,7 @@ async fn submit_task(
         .unwrap_or_else(|_| serde_json::json!({ "raw": result_raw }));
     let device_id = payload.device_id;
 
-    let transaction = match state.db.transaction().await {
+    let transaction = match db.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             tracing::error!(error = %err, "start transaction failed");
@@ -576,7 +584,8 @@ async fn start_demo_wordcount(
 ) -> impl IntoResponse {
     let parts = params.parts.unwrap_or(5).max(1);
 
-    let project = match ensure_demo_project(&state.db).await {
+    let mut db = state.db.lock().await;
+    let project = match ensure_demo_project(&mut db).await {
         Ok(project) => project,
         Err(err) => {
             return (
@@ -591,7 +600,7 @@ async fn start_demo_wordcount(
         }
     };
 
-    let schema = match schema_name_for_project(&state.db, &project).await {
+    let schema = match schema_name_for_project(&mut db, &project).await {
         Ok(schema) => schema,
         Err(err) => {
             return (
@@ -610,7 +619,7 @@ async fn start_demo_wordcount(
     let chunks = split_text(text.as_str(), parts);
     let total_tasks = chunks.len();
 
-    let transaction = match state.db.transaction().await {
+    let transaction = match db.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             tracing::error!(error = %err, "start transaction failed");
@@ -710,7 +719,8 @@ async fn start_demo_wordcount(
 }
 
 async fn status_demo_wordcount(State(state): State<AppState>) -> impl IntoResponse {
-    let project = match select_project_by_name(&state.db, DEMO_PROJECT_NAME).await {
+    let mut db = state.db.lock().await;
+    let project = match select_project_by_name(&mut db, DEMO_PROJECT_NAME).await {
         Ok(Some(project)) => project,
         Ok(None) => {
             return (
@@ -736,7 +746,7 @@ async fn status_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
         }
     };
 
-    let schema = match schema_name_for_project(&state.db, &project).await {
+    let schema = match schema_name_for_project(&mut db, &project).await {
         Ok(schema) => schema,
         Err(err) => {
             return (
@@ -751,7 +761,7 @@ async fn status_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
         }
     };
 
-    let counts = match state.db.query(task_status_counts_sql(&schema).as_str(), &[]).await {
+    let counts = match db.query(task_status_counts_sql(&schema).as_str(), &[]).await {
         Ok(rows) => rows,
         Err(err) => {
             tracing::error!(error = %err, "status query failed");
@@ -796,7 +806,8 @@ async fn status_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
 }
 
 async fn result_demo_wordcount(State(state): State<AppState>) -> impl IntoResponse {
-    let project = match select_project_by_name(&state.db, DEMO_PROJECT_NAME).await {
+    let mut db = state.db.lock().await;
+    let project = match select_project_by_name(&mut db, DEMO_PROJECT_NAME).await {
         Ok(Some(project)) => project,
         Ok(None) => {
             return (
@@ -822,7 +833,7 @@ async fn result_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
         }
     };
 
-    let schema = match schema_name_for_project(&state.db, &project).await {
+    let schema = match schema_name_for_project(&mut db, &project).await {
         Ok(schema) => schema,
         Err(err) => {
             return (
@@ -837,7 +848,7 @@ async fn result_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
         }
     };
 
-    let rows = match state.db.query(task_status_counts_sql(&schema).as_str(), &[]).await {
+    let rows = match db.query(task_status_counts_sql(&schema).as_str(), &[]).await {
         Ok(rows) => rows,
         Err(err) => {
             tracing::error!(error = %err, "status query failed");
@@ -876,7 +887,7 @@ async fn result_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
             .into_response();
     }
 
-    let result_rows = match state.db.query(task_results_sql(&schema).as_str(), &[]).await {
+    let result_rows = match db.query(task_results_sql(&schema).as_str(), &[]).await {
         Ok(rows) => rows,
         Err(err) => {
             tracing::error!(error = %err, "results query failed");
@@ -921,17 +932,16 @@ async fn result_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
         .into_response()
 }
 
-async fn fetch_demo_task(state: &AppState) -> Result<Option<DemoTask>, String> {
-    let project = match select_project_by_name(&state.db, DEMO_PROJECT_NAME).await {
+async fn fetch_demo_task(db: &mut Client) -> Result<Option<DemoTask>, String> {
+    let project = match select_project_by_name(db, DEMO_PROJECT_NAME).await {
         Ok(Some(project)) => project,
         Ok(None) => return Ok(None),
         Err(err) => return Err(err),
     };
 
-    let schema = schema_name_for_project(&state.db, &project).await?;
+    let schema = schema_name_for_project(db, &project).await?;
 
-    let transaction = state
-        .db
+    let transaction = db
         .transaction()
         .await
         .map_err(|err| format!("start transaction failed: {err}"))?;
@@ -968,7 +978,7 @@ async fn fetch_demo_task(state: &AppState) -> Result<Option<DemoTask>, String> {
     }))
 }
 
-async fn ensure_demo_project(db: &Client) -> Result<Project, String> {
+async fn ensure_demo_project(db: &mut Client) -> Result<Project, String> {
     if let Some(project) = select_project_by_name(db, DEMO_PROJECT_NAME).await? {
         return Ok(project);
     }
@@ -1007,7 +1017,7 @@ async fn ensure_demo_project(db: &Client) -> Result<Project, String> {
     Ok(project)
 }
 
-async fn select_project_by_id(db: &Client, project_id: i64) -> Result<Option<Project>, String> {
+async fn select_project_by_id(db: &mut Client, project_id: i64) -> Result<Option<Project>, String> {
     let row = db
         .query_opt(SQL_SELECT_PROJECT, &[&project_id])
         .await
@@ -1022,7 +1032,7 @@ async fn select_project_by_id(db: &Client, project_id: i64) -> Result<Option<Pro
     }))
 }
 
-async fn select_project_by_name(db: &Client, name: &str) -> Result<Option<Project>, String> {
+async fn select_project_by_name(db: &mut Client, name: &str) -> Result<Option<Project>, String> {
     let row = db
         .query_opt(SQL_SELECT_PROJECT_BY_NAME, &[&name])
         .await
@@ -1037,7 +1047,7 @@ async fn select_project_by_name(db: &Client, name: &str) -> Result<Option<Projec
     }))
 }
 
-async fn schema_name_for_project(db: &Client, project: &Project) -> Result<String, String> {
+async fn schema_name_for_project(db: &mut Client, project: &Project) -> Result<String, String> {
     let row = db
         .query_one(SQL_PROJECT_SCHEMA_NAME, &[&project.id, &project.name])
         .await
@@ -1089,7 +1099,8 @@ struct DemoTask {
 
 async fn list_projects(State(state): State<AppState>) -> impl IntoResponse {
     // Read project metadata from the public schema.
-    let rows = match state.db.query(SQL_LIST_PROJECTS, &[]).await {
+    let mut db = state.db.lock().await;
+    let rows = match db.query(SQL_LIST_PROJECTS, &[]).await {
         Ok(rows) => rows,
         Err(err) => {
             tracing::error!(error = %err, "list projects failed");
@@ -1124,7 +1135,8 @@ async fn create_project(
     Json(payload): Json<CreateProjectRequest>,
 ) -> impl IntoResponse {
     // Create project metadata and its schema in a single transaction.
-    let transaction = match state.db.transaction().await {
+    let mut db = state.db.lock().await;
+    let transaction = match db.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             tracing::error!(error = %err, "start transaction failed");
@@ -1227,7 +1239,8 @@ async fn delete_project(
     Path(project_id): Path<i64>,
 ) -> impl IntoResponse {
     // Delete schema and metadata in a single transaction.
-    let transaction = match state.db.transaction().await {
+    let mut db = state.db.lock().await;
+    let transaction = match db.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             tracing::error!(error = %err, "start transaction failed");
@@ -1319,13 +1332,22 @@ async fn delete_project(
 }
 
 async fn shutdown_signal() {
-    #[cfg(unix)]
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("sigterm handler");
+    // Use ctrl-c and SIGTERM where available.
+    let ctrl_c = tokio::signal::ctrl_c();
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        #[cfg(unix)]
-        _ = sigterm.recv() => {},
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("sigterm handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
     }
 }

@@ -7,12 +7,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
 use tokio_postgres::{error::SqlState, Client, NoTls};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 #[derive(Clone)]
 struct AppState {
-    db: Arc<Client>,
+    db: Arc<Mutex<Client>>,
 }
 
 #[allow(dead_code)]
@@ -85,7 +86,9 @@ async fn main() {
             tracing::error!(error = %err, "database connection error");
         }
     });
-    let state = AppState { db: Arc::new(db) };
+    let state = AppState {
+        db: Arc::new(Mutex::new(db)),
+    };
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -129,7 +132,8 @@ async fn validate(
     );
 
     // Keep reputation updates and flags in a single transaction.
-    let transaction = match state.db.transaction().await {
+    let mut db = state.db.lock().await;
+    let transaction = match db.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             tracing::error!(error = %err, "start transaction failed");
@@ -306,13 +310,22 @@ impl Decision {
 }
 
 async fn shutdown_signal() {
-    #[cfg(unix)]
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("sigterm handler");
+    // Use ctrl-c and SIGTERM where available.
+    let ctrl_c = tokio::signal::ctrl_c();
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        #[cfg(unix)]
-        _ = sigterm.recv() => {},
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("sigterm handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
     }
 }

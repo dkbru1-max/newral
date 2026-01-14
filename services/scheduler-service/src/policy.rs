@@ -110,7 +110,7 @@ impl PolicyEngine {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum ProposalSource {
     Ai,
     System,

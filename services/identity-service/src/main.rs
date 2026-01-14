@@ -161,13 +161,22 @@ async fn register_device(
 }
 
 async fn shutdown_signal() {
-    #[cfg(unix)]
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("sigterm handler");
+    // Use ctrl-c and SIGTERM where available.
+    let ctrl_c = tokio::signal::ctrl_c();
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        #[cfg(unix)]
-        _ = sigterm.recv() => {},
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("sigterm handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
     }
 }
