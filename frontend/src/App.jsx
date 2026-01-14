@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const kpis = [
   { label: "Connected Agents", value: "1,284", trend: "+12%" },
@@ -150,20 +150,84 @@ function App() {
     }
   };
 
+  const [activeSection, setActiveSection] = useState(sections[0]?.id ?? "");
+  const [manualActive, setManualActive] = useState("");
+  const [flashSection, setFlashSection] = useState("");
+  const manualTimerRef = useRef(null);
+  const flashTimerRef = useRef(null);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (manualActive) {
+        return;
+      }
+      const viewportMarker = window.innerHeight * 0.35;
+      let current = sections[0]?.id ?? "";
+      let fallback = sections[0]?.id ?? "";
+      for (const section of sections) {
+        const element = document.getElementById(section.id);
+        if (!element) {
+          continue;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.top <= viewportMarker) {
+          fallback = section.id;
+        }
+        if (rect.top <= viewportMarker && rect.bottom > viewportMarker) {
+          current = section.id;
+          break;
+        }
+      }
+      setActiveSection(current || fallback);
+    };
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
+    };
+  }, [manualActive]);
+
+  const handleNavClick = (sectionId) => {
+    // Keep the clicked item active even if the scroll position barely moves.
+    setManualActive(sectionId);
+    setActiveSection(sectionId);
+    setFlashSection(sectionId);
+    if (manualTimerRef.current) {
+      clearTimeout(manualTimerRef.current);
+    }
+    if (flashTimerRef.current) {
+      clearTimeout(flashTimerRef.current);
+    }
+    manualTimerRef.current = setTimeout(() => {
+      setManualActive("");
+    }, 2000);
+    flashTimerRef.current = setTimeout(() => {
+      setFlashSection("");
+    }, 1600);
+  };
+
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
           {/* Brand logo from public assets */}
           <img src="/newral_big_logo.png" alt="Newral" className="logo" />
-          <div>
+          <div className="brand-copy">
             <p className="eyebrow">Newral Portal</p>
             <h1>Investor View</h1>
           </div>
         </div>
         <nav className="nav-links">
           {sections.map((section) => (
-            <a key={section.id} href={`#${section.id}`}>
+            <a
+              key={section.id}
+              href={`#${section.id}`}
+              onClick={() => handleNavClick(section.id)}
+              className={activeSection === section.id ? "active" : ""}
+            >
               {section.title}
             </a>
           ))}
@@ -185,7 +249,10 @@ function App() {
         </header>
 
         <main className="content">
-          <section id="dashboard" className="section">
+          <section
+            id="dashboard"
+            className={`section${flashSection === "dashboard" ? " flash" : ""}`}
+          >
             <div className="section-header">
               <h2>Dashboard</h2>
               <p>Snapshot of the MVP backbone and AI governance.</p>
@@ -225,7 +292,12 @@ function App() {
             </div>
           </section>
 
-          <section id="investor-demo" className="section">
+          <section
+            id="investor-demo"
+            className={`section${
+              flashSection === "investor-demo" ? " flash" : ""
+            }`}
+          >
             <div className="section-header">
               <h2>Investor Demo</h2>
               <p>Launch the wordcount demo and track its progress.</p>
@@ -295,7 +367,10 @@ function App() {
             </div>
           </section>
 
-          <section id="agents" className="section">
+          <section
+            id="agents"
+            className={`section${flashSection === "agents" ? " flash" : ""}`}
+          >
             <div className="section-header">
               <h2>Agents</h2>
               <p>Live status for connected compute nodes.</p>
@@ -326,7 +401,10 @@ function App() {
             </div>
           </section>
 
-          <section id="tasks" className="section">
+          <section
+            id="tasks"
+            className={`section${flashSection === "tasks" ? " flash" : ""}`}
+          >
             <div className="section-header">
               <h2>Tasks</h2>
               <p>Queue preview with priority tagging.</p>
@@ -342,7 +420,10 @@ function App() {
             </div>
           </section>
 
-          <section id="monitoring" className="section">
+          <section
+            id="monitoring"
+            className={`section${flashSection === "monitoring" ? " flash" : ""}`}
+          >
             <div className="section-header">
               <h2>Monitoring</h2>
               <p>Service readiness, latency bands, and stability signals.</p>
@@ -383,7 +464,10 @@ function App() {
             </div>
           </section>
 
-          <section id="ai-mode" className="section">
+          <section
+            id="ai-mode"
+            className={`section${flashSection === "ai-mode" ? " flash" : ""}`}
+          >
             <div className="section-header">
               <h2>AI Mode</h2>
               <p>Governance settings with policy enforcement.</p>
@@ -408,7 +492,10 @@ function App() {
             </div>
           </section>
 
-          <section id="projects" className="section">
+          <section
+            id="projects"
+            className={`section${flashSection === "projects" ? " flash" : ""}`}
+          >
             <div className="section-header">
               <h2>Projects</h2>
               <p>Portfolio view for active and staged workloads.</p>
@@ -435,7 +522,12 @@ function App() {
             </div>
           </section>
 
-          <section id="system-health" className="section">
+          <section
+            id="system-health"
+            className={`section${
+              flashSection === "system-health" ? " flash" : ""
+            }`}
+          >
             <div className="section-header">
               <h2>System Health</h2>
               <p>Live readiness checks proxied through the gateway.</p>

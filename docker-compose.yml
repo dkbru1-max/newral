@@ -111,7 +111,7 @@ services:
       POLICY_MAX_CONCURRENT_TASKS: 10
       POLICY_MAX_DAILY_BUDGET: 100.0
       POLICY_RECHECK_THRESHOLD: 0.2
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/${POSTGRES_DB}
     ports:
       - "8082:8080"
     depends_on:
@@ -127,7 +127,7 @@ services:
       context: ./services/validator-service
     environment:
       PORT: 8080
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/${POSTGRES_DB}
     ports:
       - "8083:8080"
     depends_on:

@@ -14,6 +14,10 @@
   box-sizing: border-box;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
   font-family: "Space Grotesk", sans-serif;
@@ -39,6 +43,11 @@ img {
   border-right: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow: auto;
 }
 
 .brand {
@@ -47,8 +56,14 @@ img {
   align-items: center;
 }
 
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .logo {
-  width: clamp(120px, 12vw, 160px);
+  width: clamp(96px, 10vw, 128px);
   height: auto;
 }
 
@@ -82,6 +97,12 @@ h3 {
   text-decoration: none;
   padding: 8px 10px;
   border-radius: 10px;
+}
+
+.nav-links a.active {
+  color: var(--ink);
+  background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .nav-links a:hover {
@@ -131,6 +152,22 @@ h3 {
 .content {
   display: grid;
   gap: 56px;
+}
+
+.section.flash {
+  animation: section-flash 1.4s ease;
+}
+
+@keyframes section-flash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(242, 107, 58, 0.35);
+  }
+  60% {
+    box-shadow: 0 0 0 10px rgba(242, 107, 58, 0);
+  }
+  100% {
+    box-shadow: none;
+  }
 }
 
 .section-header {
@@ -425,6 +462,8 @@ th {
   .sidebar {
     border-right: none;
     border-bottom: 1px solid var(--line);
+    position: relative;
+    height: auto;
   }
 
   .nav-links {
