@@ -10,6 +10,24 @@
 
 Kafka is exposed on host port `9092`, but inside the Docker network use `kafka:19092`.
 
+## Portal access (LAN)
+The gateway publishes HTTP on port `80` so the portal is reachable from another machine.
+
+1) Start the stack:
+```bash
+docker compose up -d --build
+```
+2) Open in a browser:
+- `http://localhost/`
+- `http://<VM_IP>/` from another machine on the same network
+
+Firewall: allow inbound `80` (later `443` for HTTPS).
+
+Quick check:
+```bash
+curl http://localhost/
+```
+
 ## Service checks (curl)
 Identity service:
 ```bash
@@ -55,3 +73,17 @@ git push origin agent-v0.1.0
 Manual build via Actions artifacts:
 1) GitHub -> Actions -> Build Windows Agent -> Run workflow.
 2) Download artifact `newral-agent-windows` from the completed run.
+
+## Как собрать Windows Agent через GitHub Actions
+Вариант A (релиз по тегу):
+1) Создайте тег в локальном репозитории:
+```bash
+git tag agent-v0.1.0
+git push origin agent-v0.1.0
+```
+2) Дождитесь завершения workflow `Build Windows Agent (Release)`.
+3) Скачайте `newral-agent-windows.zip` из GitHub Releases.
+
+Вариант B (ручной запуск):
+1) GitHub -> Actions -> `Build Windows Agent (Release)` -> Run workflow.
+2) Скачайте артефакт `newral-agent-windows` из завершенного запуска.

@@ -15,7 +15,7 @@ logs:
 	$(COMPOSE) logs -f
 
 migrate:
-	$(COMPOSE) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /migrations/0001_init.sql'
+	$(COMPOSE) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /migrations/0001_init.sql -f /migrations/0002_multi_project_schemas.sql'
 
 backup:
 	./scripts/backup.sh

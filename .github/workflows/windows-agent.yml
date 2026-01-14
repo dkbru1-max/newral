@@ -1,0 +1,67 @@
+name: Build Windows Agent
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "agent-v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build agent
+        run: cargo build --release --manifest-path client/agent/Cargo.toml
+
+      - name: Package artifacts
+        run: |
+          $exe = "client/agent/target/release/newral-agent.exe"
+          $zip = "client/agent/target/release/newral-agent-windows.zip"
+          Compress-Archive -Path $exe -DestinationPath $zip -Force
+          Get-FileHash $exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  newral-agent.exe" } | Out-File "client/agent/target/release/newral-agent.exe.sha256" -Encoding ascii
+
+      - name: Import GPG key (optional)
+        if: secrets.GPG_PRIVATE_KEY != ''
+        run: |
+          $key = "${{ secrets.GPG_PRIVATE_KEY }}"
+          $pass = "${{ secrets.GPG_PASSPHRASE }}"
+          $key | gpg --batch --yes --passphrase $pass --import
+
+      - name: Sign artifacts (optional)
+        if: secrets.GPG_PRIVATE_KEY != ''
+        run: |
+          $pass = "${{ secrets.GPG_PASSPHRASE }}"
+          gpg --batch --yes --passphrase $pass --armor --detach-sign client/agent/target/release/newral-agent.exe
+          gpg --batch --yes --passphrase $pass --armor --detach-sign client/agent/target/release/newral-agent-windows.zip
+          gpg --batch --yes --passphrase $pass --armor --detach-sign client/agent/target/release/newral-agent.exe.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: newral-agent-windows
+          path: |
+            client/agent/target/release/newral-agent.exe
+            client/agent/target/release/newral-agent.exe.sha256
+            client/agent/target/release/newral-agent-windows.zip
+            client/agent/target/release/newral-agent.exe.asc
+            client/agent/target/release/newral-agent-windows.zip.asc
+            client/agent/target/release/newral-agent.exe.sha256.asc
+
+      - name: Release artifact
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            client/agent/target/release/newral-agent.exe
+            client/agent/target/release/newral-agent.exe.sha256
+            client/agent/target/release/newral-agent-windows.zip
+            client/agent/target/release/newral-agent.exe.asc
+            client/agent/target/release/newral-agent-windows.zip.asc
+            client/agent/target/release/newral-agent.exe.sha256.asc

@@ -26,10 +26,12 @@ projects
 tasks
 - Units of work scheduled for execution.
 - Fields: `id`, `project_id`, `status`, `payload`, `created_at`, `updated_at`.
+ - In MVP, tasks live in per-project schemas (`prj_<id>_<name>`).
 
 task_results
 - Outputs reported by devices.
 - Fields: `id`, `task_id`, `device_id`, `status`, `result`, `created_at`.
+ - Stored alongside tasks in the project schema.
 
 flags
 - Signals for Dr. Mann#n to review a user/device/task.

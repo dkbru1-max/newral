@@ -111,6 +111,7 @@ services:
       POLICY_MAX_CONCURRENT_TASKS: 10
       POLICY_MAX_DAILY_BUDGET: 100.0
       POLICY_RECHECK_THRESHOLD: 0.2
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     ports:
       - "8082:8080"
     depends_on:
@@ -149,6 +150,33 @@ services:
       - redis
       - kafka
       - minio
+    networks:
+      - newral
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - identity-service
+      - scheduler-service
+      - validator-service
+      - telemetry-service
+    networks:
+      - newral
+
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./gateway/cors.conf:/etc/nginx/cors.conf:ro
+    depends_on:
+      - frontend
+      - identity-service
+      - scheduler-service
+      - validator-service
+      - telemetry-service
     networks:
       - newral
 

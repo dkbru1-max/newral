@@ -27,6 +27,15 @@ VALUES ($1, $2) \
 ON CONFLICT (device_id) DO UPDATE SET score = device_reputation.score + $2, updated_at = NOW() \
 RETURNING score";
 
+#[allow(dead_code)]
+fn task_result_select_sql(schema: &str) -> String {
+    // Task results are stored per project schema.
+    format!(
+        "SELECT id, status, result FROM {}.task_results WHERE task_id = $1 AND device_id = $2",
+        schema
+    )
+}
+
 #[derive(Deserialize)]
 struct ValidateRequest {
     task_id: i64,

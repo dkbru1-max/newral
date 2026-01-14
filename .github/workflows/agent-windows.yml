@@ -1,0 +1,38 @@
+name: Build Windows Agent (Release)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "agent-v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build agent
+        run: cargo build --release --manifest-path client/agent/Cargo.toml
+
+      - name: Package zip
+        run: |
+          $exe = "client/agent/target/release/newral-agent.exe"
+          $zip = "client/agent/target/release/newral-agent-windows.zip"
+          Compress-Archive -Path $exe -DestinationPath $zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: newral-agent-windows
+          path: client/agent/target/release/newral-agent-windows.zip
+
+      - name: Release artifact
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: client/agent/target/release/newral-agent-windows.zip
