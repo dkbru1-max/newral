@@ -1,15 +1,22 @@
+#![cfg_attr(feature = "gui", windows_subsystem = "windows")]
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env,
+    io::{self, Write},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    sync::Mutex,
+    sync::{Mutex, Notify},
     time::{sleep, timeout},
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -38,7 +45,7 @@ struct FileConfig {
     stderr_limit_mb: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Agent {
     config: std::sync::Arc<AgentConfig>,
     client: Client,
@@ -104,11 +111,112 @@ struct SandboxConfig {
     stderr_limit_bytes: u64,
 }
 
+#[derive(Clone)]
+struct StopSignal {
+    flag: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl StopSignal {
+    fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    fn stop(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    fn stopped(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+
+    async fn sleep_or_stop(&self, duration: Duration) -> bool {
+        if self.stopped() {
+            return true;
+        }
+        tokio::select! {
+            _ = sleep(duration) => false,
+            _ = self.notify.notified() => true,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LogBuffer {
+    lines: Arc<StdMutex<VecDeque<String>>>,
+    limit: usize,
+}
+
+impl LogBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            lines: Arc::new(StdMutex::new(VecDeque::new())),
+            limit,
+        }
+    }
+
+    fn push(&self, line: String) {
+        let mut lines = self.lines.lock().unwrap();
+        lines.push_back(line);
+        while lines.len() > self.limit {
+            lines.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.lines.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+struct LogWriter {
+    buffer: LogBuffer,
+}
+
+impl Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let line = String::from_utf8_lossy(buf).to_string();
+        self.buffer.push(line);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+    type Writer = LogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        LogWriter {
+            buffer: self.clone(),
+        }
+    }
+}
+
+fn init_tracing(log_buffer: Option<LogBuffer>) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let builder = FmtSubscriber::builder().with_env_filter(filter).with_ansi(false);
+    let subscriber = match log_buffer {
+        Some(buffer) => builder.with_writer(buffer).finish(),
+        None => builder.finish(),
+    };
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+#[cfg(feature = "gui")]
+fn main() {
+    gui::run();
+}
+
+#[cfg(not(feature = "gui"))]
 #[tokio::main]
 async fn main() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let subscriber = FmtSubscriber::builder().with_env_filter(filter).finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    init_tracing(None);
 
     // Load config from file and env; env wins.
     let config = match load_config() {
@@ -125,23 +233,33 @@ async fn main() {
         runner: std::sync::Arc::new(SandboxRunner {}),
     };
 
-    // Heartbeat runs in a separate task.
-    let heartbeat_agent = agent.clone();
-    tokio::spawn(async move {
-        heartbeat_agent.heartbeat_loop().await;
-    });
+    let stop = StopSignal::new();
+    let handles = spawn_agent(agent, stop.clone());
 
-    // Main loop polls for tasks and submits results.
-    agent.run_loop().await;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutdown requested");
+            stop.stop();
+        }
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
 }
 
 impl Agent {
-    async fn heartbeat_loop(self) {
+    async fn heartbeat_loop(self, stop: StopSignal) {
         loop {
+            if stop.stopped() {
+                break;
+            }
             if let Err(err) = self.send_heartbeat().await {
                 tracing::warn!(error = %err, "heartbeat failed");
             }
-            sleep(self.config.heartbeat_interval).await;
+            if stop.sleep_or_stop(self.config.heartbeat_interval).await {
+                break;
+            }
         }
     }
 
@@ -164,8 +282,11 @@ impl Agent {
         Ok(())
     }
 
-    async fn run_loop(&self) {
+    async fn run_loop(&self, stop: StopSignal) {
         loop {
+            if stop.stopped() {
+                break;
+            }
             match self.request_task().await {
                 Ok(Some(task)) => {
                     // Runner abstracts future sandboxed execution.
@@ -185,7 +306,9 @@ impl Agent {
                 }
             }
 
-            sleep(self.config.poll_interval).await;
+            if stop.sleep_or_stop(self.config.poll_interval).await {
+                break;
+            }
         }
     }
 
@@ -243,6 +366,21 @@ impl Agent {
         );
         Ok(())
     }
+}
+
+fn spawn_agent(agent: Agent, stop: StopSignal) -> Vec<tokio::task::JoinHandle<()>> {
+    let heartbeat_agent = agent.clone();
+    let heartbeat_stop = stop.clone();
+    let heartbeat_handle = tokio::spawn(async move {
+        heartbeat_agent.heartbeat_loop(heartbeat_stop).await;
+    });
+
+    let run_stop = stop.clone();
+    let run_handle = tokio::spawn(async move {
+        agent.run_loop(run_stop).await;
+    });
+
+    vec![heartbeat_handle, run_handle]
 }
 
 trait TaskRunner {
@@ -547,11 +685,22 @@ fn is_safe_filename(name: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
+fn resolve_config_path() -> PathBuf {
+    if let Ok(path) = env::var("AGENT_CONFIG_PATH") {
+        return PathBuf::from(path);
+    }
+
+    let repo_path = PathBuf::from("client/agent/config.toml");
+    if repo_path.exists() {
+        return repo_path;
+    }
+
+    // Fall back to a local config next to the executable.
+    PathBuf::from("config.toml")
+}
+
 fn load_config() -> Result<AgentConfig, String> {
-    // Default path is inside the repo for local dev.
-    let config_path = env::var("AGENT_CONFIG_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("client/agent/config.toml"));
+    let config_path = resolve_config_path();
 
     let file_config = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
@@ -623,4 +772,206 @@ fn load_config() -> Result<AgentConfig, String> {
             stderr_limit_bytes: stderr_limit_mb * 1024 * 1024,
         },
     })
+}
+
+fn save_config(path: &Path, config: &FileConfig) -> Result<(), String> {
+    let content =
+        toml::to_string_pretty(config).map_err(|err| format!("encode config: {err}"))?;
+    std::fs::write(path, content).map_err(|err| format!("write config: {err}"))?;
+    Ok(())
+}
+
+#[cfg(feature = "gui")]
+mod gui {
+    use super::*;
+    use eframe::egui;
+
+    pub fn run() {
+        let log_buffer = LogBuffer::new(500);
+        init_tracing(Some(log_buffer.clone()));
+
+        let options = eframe::NativeOptions::default();
+        let app = AgentGui::new(log_buffer);
+        let _ = eframe::run_native(
+            "Newral Agent",
+            options,
+            Box::new(|_cc| Box::new(app)),
+        );
+    }
+
+    struct AgentGui {
+        config_path: PathBuf,
+        log_buffer: LogBuffer,
+        base_config: AgentConfig,
+        node_id: String,
+        protocol: String,
+        host: String,
+        running: bool,
+        stop: Option<StopSignal>,
+        runtime: tokio::runtime::Runtime,
+        last_error: Option<String>,
+    }
+
+    impl AgentGui {
+        fn new(log_buffer: LogBuffer) -> Self {
+            let config_path = resolve_config_path();
+            let base_config = load_config().unwrap_or_else(|_| AgentConfig {
+                node_id: "dev-node".to_string(),
+                scheduler_url: "http://localhost:8082".to_string(),
+                heartbeat_interval: Duration::from_secs(10),
+                poll_interval: Duration::from_secs(5),
+                runner_sleep: Duration::from_secs(2),
+                sandbox: SandboxConfig {
+                    python_bin: "python".to_string(),
+                    timeout: Duration::from_secs(60),
+                    workspace_limit_bytes: 512 * 1024 * 1024,
+                    stdout_limit_bytes: 10 * 1024 * 1024,
+                    stderr_limit_bytes: 10 * 1024 * 1024,
+                },
+            });
+
+            let (protocol, host) = split_url(&base_config.scheduler_url);
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+
+            Self {
+                config_path,
+                log_buffer,
+                base_config: base_config.clone(),
+                node_id: base_config.node_id,
+                protocol,
+                host,
+                running: false,
+                stop: None,
+                runtime,
+                last_error: None,
+            }
+        }
+
+        fn scheduler_url(&self) -> String {
+            format!("{}://{}", self.protocol, self.host)
+        }
+
+        fn start_agent(&mut self) {
+            if self.running {
+                return;
+            }
+            let mut config = self.base_config.clone();
+            config.node_id = self.node_id.trim().to_string();
+            config.scheduler_url = self.scheduler_url();
+
+            let stop = StopSignal::new();
+            let agent = Agent {
+                config: std::sync::Arc::new(config),
+                client: Client::new(),
+                runner: std::sync::Arc::new(SandboxRunner {}),
+            };
+
+            let stop_clone = stop.clone();
+            self.runtime.spawn(async move {
+                let _handles = spawn_agent(agent, stop_clone);
+            });
+
+            self.running = true;
+            self.stop = Some(stop);
+            self.last_error = None;
+            tracing::info!("agent started");
+        }
+
+        fn stop_agent(&mut self) {
+            if let Some(stop) = self.stop.take() {
+                stop.stop();
+            }
+            self.running = false;
+            tracing::info!("agent stopped");
+        }
+
+        fn save_settings(&mut self) {
+            let file_config = FileConfig {
+                node_id: Some(self.node_id.trim().to_string()),
+                scheduler_url: Some(self.scheduler_url()),
+                heartbeat_interval_secs: Some(self.base_config.heartbeat_interval.as_secs()),
+                poll_interval_secs: Some(self.base_config.poll_interval.as_secs()),
+                runner_sleep_secs: Some(self.base_config.runner_sleep.as_secs()),
+                python_bin: Some(self.base_config.sandbox.python_bin.clone()),
+                timeout_secs: Some(self.base_config.sandbox.timeout.as_secs()),
+                workspace_limit_mb: Some(self.base_config.sandbox.workspace_limit_bytes / 1024 / 1024),
+                stdout_limit_mb: Some(self.base_config.sandbox.stdout_limit_bytes / 1024 / 1024),
+                stderr_limit_mb: Some(self.base_config.sandbox.stderr_limit_bytes / 1024 / 1024),
+            };
+
+            if let Err(err) = save_config(&self.config_path, &file_config) {
+                self.last_error = Some(err);
+            } else {
+                self.last_error = None;
+            }
+        }
+    }
+
+    impl eframe::App for AgentGui {
+        fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Newral Agent");
+                    if self.running {
+                        if ui.button("Stop").clicked() {
+                            self.stop_agent();
+                        }
+                    } else if ui.button("Start").clicked() {
+                        self.start_agent();
+                    }
+                });
+            });
+
+            egui::SidePanel::left("settings_panel").show(ctx, |ui| {
+                ui.heading("Settings");
+                ui.label("Node ID");
+                ui.text_edit_singleline(&mut self.node_id);
+
+                ui.separator();
+                ui.label("Server");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.protocol, "http".to_string(), "HTTP");
+                    ui.radio_value(&mut self.protocol, "https".to_string(), "HTTPS");
+                });
+                ui.text_edit_singleline(&mut self.host);
+                ui.label(format!("URL: {}", self.scheduler_url()));
+
+                if ui.button("Save settings").clicked() {
+                    self.save_settings();
+                }
+
+                if let Some(err) = &self.last_error {
+                    ui.colored_label(egui::Color32::RED, err);
+                }
+            });
+
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading("Live Log");
+                ui.separator();
+
+                let lines = self.log_buffer.snapshot();
+                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                    for line in lines {
+                        ui.label(line);
+                    }
+                });
+            });
+
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
+    fn split_url(url: &str) -> (String, String) {
+        if let Some(rest) = url.strip_prefix("https://") {
+            return ("https".to_string(), rest.to_string());
+        }
+        if let Some(rest) = url.strip_prefix("http://") {
+            return ("http".to_string(), rest.to_string());
+        }
+        ("http".to_string(), url.to_string())
+    }
 }

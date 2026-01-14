@@ -17,7 +17,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build agent
-        run: cargo build --release --manifest-path client/agent/Cargo.toml
+        run: cargo build --release --manifest-path client/agent/Cargo.toml --features gui
 
       - name: Package zip
         run: |
