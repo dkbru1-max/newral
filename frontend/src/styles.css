@@ -54,16 +54,19 @@ img {
   display: flex;
   gap: 16px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .brand-copy {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 160px;
+  max-width: 220px;
 }
 
 .logo {
-  width: clamp(192px, 20vw, 256px);
+  width: clamp(150px, 16vw, 210px);
   height: auto;
 }
 
