@@ -41,3 +41,17 @@ curl -sS http://localhost:8084/healthz
 curl -sS http://localhost:8084/readyz
 curl -sS -X POST http://localhost:8084/v1/event -H 'Content-Type: application/json' -d '{"event_type":"startup","payload":{"note":"hello"}}'
 ```
+
+## Windows agent build (GitHub Actions)
+Release build (recommended):
+1) Create a tag locally:
+```bash
+git tag agent-v0.1.0
+git push origin agent-v0.1.0
+```
+2) Wait for Actions run to finish.
+3) Download from GitHub Releases: `newral-agent.exe` or `newral-agent-windows.zip`.
+
+Manual build via Actions artifacts:
+1) GitHub -> Actions -> Build Windows Agent -> Run workflow.
+2) Download artifact `newral-agent-windows` from the completed run.
