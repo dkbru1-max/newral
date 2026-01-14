@@ -17,7 +17,7 @@ use tokio::{
     io::AsyncReadExt,
     process::Command,
     sync::{Mutex, Notify},
-    time::{sleep, timeout},
+    time::sleep,
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -31,7 +31,7 @@ struct AgentConfig {
     sandbox: SandboxConfig,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 struct FileConfig {
     node_id: Option<String>,
     scheduler_url: Option<String>,
@@ -201,10 +201,11 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
 fn init_tracing(log_buffer: Option<LogBuffer>) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let builder = FmtSubscriber::builder().with_env_filter(filter).with_ansi(false);
-    let subscriber = match log_buffer {
-        Some(buffer) => builder.with_writer(buffer).finish(),
-        None => builder.finish(),
+    let writer = match log_buffer {
+        Some(buffer) => tracing_subscriber::fmt::writer::BoxMakeWriter::new(buffer),
+        None => tracing_subscriber::fmt::writer::BoxMakeWriter::new(io::stdout),
     };
+    let subscriber = builder.with_writer(writer).finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
@@ -513,11 +514,11 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
     let child_for_monitor = child.clone();
 
     let workspace_path = workspace.to_path_buf();
+    let workspace_limit = sandbox.workspace_limit_bytes;
     let size_monitor = tokio::spawn(async move {
         // Watch workspace size and kill on breach.
-        if let Err(err) =
-            watch_workspace_limit(&workspace_path, sandbox.workspace_limit_bytes, child_for_monitor)
-                .await
+        if let Err(err) = watch_workspace_limit(&workspace_path, workspace_limit, child_for_monitor)
+            .await
         {
             tracing::warn!(error = %err, "workspace limit reached");
         }
@@ -536,31 +537,27 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
         "stderr",
     ));
 
-    let wait_future = async {
-        let status = child.lock().await.wait().await.map_err(|err| format!("wait: {err}"))?;
-        let stdout = stdout_handle
-            .await
-            .map_err(|_| "stdout join error".to_string())??;
-        let stderr = stderr_handle
-            .await
-            .map_err(|_| "stderr join error".to_string())??;
-        Ok::<_, String>((status, stdout, stderr))
-    };
-
-    let result = match timeout(sandbox.timeout, wait_future).await {
-        Ok(result) => result,
-        Err(_) => {
+    let status = tokio::select! {
+        result = child.lock().await.wait() => {
+            result.map_err(|err| format!("wait: {err}"))?
+        }
+        _ = sleep(sandbox.timeout) => {
             // Timeout reached: terminate the process.
             let _ = child.lock().await.kill().await;
             stdout_handle.abort();
             stderr_handle.abort();
             return Err("timeout".to_string());
         }
-    }?;
+    };
 
     size_monitor.abort();
 
-    let (status, stdout_bytes, stderr_bytes) = result;
+    let stdout_bytes = stdout_handle
+        .await
+        .map_err(|_| "stdout join error".to_string())??;
+    let stderr_bytes = stderr_handle
+        .await
+        .map_err(|_| "stderr join error".to_string())??;
     let stdout_text = String::from_utf8_lossy(&stdout_bytes).to_string();
     let stderr_text = String::from_utf8_lossy(&stderr_bytes).to_string();
 
@@ -795,7 +792,7 @@ mod gui {
         let _ = eframe::run_native(
             "Newral Agent",
             options,
-            Box::new(|_cc| Box::new(app)),
+            Box::new(|_cc| Ok(Box::new(app))),
         );
     }
 
