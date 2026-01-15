@@ -1,8 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 1024">
-  <image
-    href="/newral_big_logo.png"
-    width="1536"
-    height="1024"
-    preserveAspectRatio="xMinYMin slice"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="none" />
+  <path
+    fill="#f26b3a"
+    d="M64 40h32v176H64zM160 40h32v176h-32zM96 40h32l64 176h-32z"
   />
 </svg>

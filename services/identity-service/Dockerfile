@@ -1,15 +1,17 @@
 FROM rust:1.81-bookworm AS builder
 # Build the release binary.
 WORKDIR /app
-COPY Cargo.toml ./
-COPY src ./src
+COPY services/common ./common
+COPY services/identity-service/Cargo.toml ./identity-service/Cargo.toml
+COPY services/identity-service/src ./identity-service/src
+WORKDIR /app/identity-service
 RUN cargo build --release
 
 FROM debian:bookworm-slim
 # Minimal runtime image.
 RUN useradd -m -u 10001 app
 WORKDIR /app
-COPY --from=builder /app/target/release/identity-service /app/identity-service
+COPY --from=builder /app/identity-service/target/release/identity-service /app/identity-service
 EXPOSE 8080
 USER app
 ENV PORT=8080

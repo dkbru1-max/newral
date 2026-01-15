@@ -1,6 +1,7 @@
 use std::{env, fmt};
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct PolicyConfig {
     pub ai_mode: AiMode,
     pub max_concurrent_tasks: u32,
@@ -38,6 +39,7 @@ impl PolicyConfig {
 }
 
 #[derive(Clone, Copy)]
+#[allow(clippy::enum_variant_names)]
 pub enum AiMode {
     AiOff,
     AiAdvisory,
@@ -133,9 +135,16 @@ pub struct TaskRequestProposal {
 }
 
 pub enum PolicyDecision {
-    Allowed { reasons: Vec<String> },
-    Limited { granted_tasks: u32, reasons: Vec<String> },
-    Denied { reasons: Vec<String> },
+    Allowed {
+        reasons: Vec<String>,
+    },
+    Limited {
+        granted_tasks: u32,
+        reasons: Vec<String>,
+    },
+    Denied {
+        reasons: Vec<String>,
+    },
 }
 
 impl PolicyDecision {
@@ -152,6 +161,38 @@ impl PolicyDecision {
             PolicyDecision::Allowed { reasons } => reasons,
             PolicyDecision::Limited { reasons, .. } => reasons,
             PolicyDecision::Denied { reasons } => reasons,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_off_denies_ai_proposals() {
+        let mut config = PolicyConfig::from_env();
+        config.ai_mode = AiMode::AiOff;
+        let engine = PolicyEngine::new(config);
+        let decision = engine.evaluate_task_request(TaskRequestProposal {
+            requested_tasks: 1,
+            source: ProposalSource::Ai,
+        });
+        assert!(matches!(decision, PolicyDecision::Denied { .. }));
+    }
+
+    #[test]
+    fn clamps_requested_tasks() {
+        let mut config = PolicyConfig::from_env();
+        config.max_concurrent_tasks = 2;
+        let engine = PolicyEngine::new(config);
+        let decision = engine.evaluate_task_request(TaskRequestProposal {
+            requested_tasks: 5,
+            source: ProposalSource::System,
+        });
+        match decision {
+            PolicyDecision::Limited { granted_tasks, .. } => assert_eq!(granted_tasks, 2),
+            _ => panic!("expected limited decision"),
         }
     }
 }

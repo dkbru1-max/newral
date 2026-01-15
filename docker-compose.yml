@@ -88,7 +88,8 @@ services:
 
   identity-service:
     build:
-      context: ./services/identity-service
+      context: .
+      dockerfile: services/identity-service/Dockerfile
     environment:
       PORT: 8080
       MAX_DEVICES_PER_USER: 5
@@ -104,7 +105,8 @@ services:
 
   scheduler-service:
     build:
-      context: ./services/scheduler-service
+      context: .
+      dockerfile: services/scheduler-service/Dockerfile
     environment:
       PORT: 8080
       AI_MODE: AI_OFF
@@ -124,7 +126,8 @@ services:
 
   validator-service:
     build:
-      context: ./services/validator-service
+      context: .
+      dockerfile: services/validator-service/Dockerfile
     environment:
       PORT: 8080
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD_URLENCODED}@postgres:5432/${POSTGRES_DB}
@@ -140,7 +143,8 @@ services:
 
   telemetry-service:
     build:
-      context: ./services/telemetry-service
+      context: .
+      dockerfile: services/telemetry-service/Dockerfile
     environment:
       PORT: 8080
     ports:

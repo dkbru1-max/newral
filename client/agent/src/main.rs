@@ -2,6 +2,7 @@
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
     env,
@@ -66,6 +67,7 @@ struct TaskRequest<'a> {
 }
 
 #[derive(Deserialize, Default)]
+#[allow(dead_code)]
 struct TaskResponse {
     status: String,
     task_id: String,
@@ -112,6 +114,27 @@ struct SandboxConfig {
     stderr_limit_bytes: u64,
 }
 
+#[derive(Serialize)]
+struct SandboxResult {
+    status: String,
+    stdout: String,
+    stderr: String,
+    duration_ms: u64,
+    started_at_ms: u128,
+    ended_at_ms: u128,
+    exit_code: Option<i32>,
+    error: Option<String>,
+    stdout_bytes: u64,
+    stderr_bytes: u64,
+    stdout_sha256: String,
+    script_sha256: Option<String>,
+    workspace_bytes: u64,
+    files_written: u64,
+    engine: String,
+    node_id: String,
+    task_id: String,
+}
+
 #[derive(Clone)]
 struct StopSignal {
     flag: Arc<AtomicBool>,
@@ -155,6 +178,7 @@ enum LogLevel {
 }
 
 impl LogLevel {
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     fn label(&self) -> &'static str {
         match self {
             LogLevel::Info => "info",
@@ -166,6 +190,7 @@ impl LogLevel {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 struct LogEntry {
     level: LogLevel,
     message: String,
@@ -178,6 +203,7 @@ struct LogBuffer {
 }
 
 impl LogBuffer {
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     fn new(limit: usize) -> Self {
         Self {
             lines: Arc::new(StdMutex::new(VecDeque::new())),
@@ -200,6 +226,7 @@ impl LogBuffer {
         }
     }
 
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     fn snapshot(&self) -> Vec<LogEntry> {
         self.lines.lock().unwrap().iter().cloned().collect()
     }
@@ -246,6 +273,7 @@ struct AgentRuntime {
 }
 
 impl AgentRuntime {
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     fn new(logs: LogBuffer) -> Self {
         Self {
             status: Arc::new(Mutex::new(AgentRuntimeState::default())),
@@ -253,6 +281,7 @@ impl AgentRuntime {
         }
     }
 
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     fn with_state(logs: LogBuffer, status: Arc<Mutex<AgentRuntimeState>>) -> Self {
         Self { status, logs }
     }
@@ -264,7 +293,9 @@ impl AgentRuntime {
 
 fn init_tracing(log_buffer: Option<LogBuffer>) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = FmtSubscriber::builder().with_env_filter(filter).with_ansi(false);
+    let builder = FmtSubscriber::builder()
+        .with_env_filter(filter)
+        .with_ansi(false);
     let writer = match log_buffer {
         Some(buffer) => tracing_subscriber::fmt::writer::BoxMakeWriter::new(buffer),
         None => tracing_subscriber::fmt::writer::BoxMakeWriter::new(io::stdout),
@@ -273,10 +304,12 @@ fn init_tracing(log_buffer: Option<LogBuffer>) {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 fn should_run_service() -> bool {
     env::args().any(|arg| arg == "--service")
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 fn run_service_mode() {
     init_tracing(None);
     let config = match load_config() {
@@ -392,8 +425,7 @@ impl Agent {
                 tracing::warn!(error = %err, "heartbeat failed");
                 self.log(LogLevel::Warn, "Heartbeat failed");
                 self.set_connected(false).await;
-                self.set_last_error(Some(format!("heartbeat: {err}")))
-                    .await;
+                self.set_last_error(Some(format!("heartbeat: {err}"))).await;
             }
             if stop.sleep_or_stop(self.config.heartbeat_interval).await {
                 break;
@@ -413,10 +445,7 @@ impl Agent {
             .send()
             .await?;
 
-        tracing::info!(
-            status = response.status().as_u16(),
-            "heartbeat sent"
-        );
+        tracing::info!(status = response.status().as_u16(), "heartbeat sent");
         if response.status().is_success() {
             self.log(LogLevel::Info, "Heartbeat ok");
             self.set_connected(true).await;
@@ -437,7 +466,12 @@ impl Agent {
                     // Runner abstracts future sandboxed execution.
                     let result = self
                         .runner
-                        .run(&task, &self.config.sandbox, self.config.runner_sleep)
+                        .run(
+                            &task,
+                            &self.config.sandbox,
+                            self.config.node_id.as_str(),
+                            self.config.runner_sleep,
+                        )
                         .await;
                     if result.starts_with("error:") {
                         self.log(LogLevel::Error, &format!("Task failed {}", task.id));
@@ -448,8 +482,7 @@ impl Agent {
                     if let Err(err) = self.submit_result(&task, &result).await {
                         tracing::warn!(error = %err, "submit failed");
                         self.log(LogLevel::Warn, "Result submit failed");
-                        self.set_last_error(Some(format!("submit: {err}")))
-                            .await;
+                        self.set_last_error(Some(format!("submit: {err}"))).await;
                     } else {
                         self.set_last_result(Some(result.clone())).await;
                     }
@@ -461,8 +494,7 @@ impl Agent {
                 Err(err) => {
                     tracing::warn!(error = %err, "task request failed");
                     self.log(LogLevel::Warn, "Task request failed");
-                    self.set_last_error(Some(format!("request: {err}")))
-                        .await;
+                    self.set_last_error(Some(format!("request: {err}"))).await;
                 }
             }
 
@@ -486,7 +518,10 @@ impl Agent {
             .await?;
 
         if !response.status().is_success() {
-            tracing::warn!(status = response.status().as_u16(), "scheduler rejected task");
+            tracing::warn!(
+                status = response.status().as_u16(),
+                "scheduler rejected task"
+            );
             return Ok(None);
         }
 
@@ -544,12 +579,14 @@ fn spawn_agent(agent: Agent, stop: StopSignal) -> Vec<tokio::task::JoinHandle<()
     vec![heartbeat_handle, run_handle]
 }
 
+#[allow(dead_code)]
 trait TaskRunner {
     fn name(&self) -> &'static str;
     fn run<'a>(
         &'a self,
         task: &'a Task,
         sandbox: &'a SandboxConfig,
+        node_id: &'a str,
         sleep_duration: Duration,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>;
 }
@@ -565,27 +602,59 @@ impl TaskRunner for SandboxRunner {
         &'a self,
         task: &'a Task,
         sandbox: &'a SandboxConfig,
+        node_id: &'a str,
         sleep_duration: Duration,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
         Box::pin(async move {
             // Dispatch by task type to keep runner extensible.
             let kind = task.payload.kind.as_deref().unwrap_or("sleep");
             match kind {
-                "python_script" => run_python_task(task, sandbox).await,
-                _ => run_sleep_task(task, sleep_duration).await,
+                "python_script" => run_python_task(task, sandbox, node_id).await,
+                _ => run_sleep_task(task, sleep_duration, node_id).await,
             }
         })
     }
 }
 
-async fn run_sleep_task(task: &Task, sleep_duration: Duration) -> String {
+async fn run_sleep_task(task: &Task, sleep_duration: Duration, node_id: &str) -> String {
     // Simple fallback task for MVP demos.
     tracing::info!(task_id = %task.id, runner = "sleep", "running task");
+    let started_at = SystemTime::now();
     sleep(sleep_duration).await;
-    "ok".to_string()
+    let ended_at = SystemTime::now();
+    let duration_ms = ended_at
+        .duration_since(started_at)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let result = SandboxResult {
+        status: "ok".to_string(),
+        stdout: "ok".to_string(),
+        stderr: "".to_string(),
+        duration_ms,
+        started_at_ms: started_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        ended_at_ms: ended_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        exit_code: Some(0),
+        error: None,
+        stdout_bytes: 2,
+        stderr_bytes: 0,
+        stdout_sha256: hash_bytes("ok".as_bytes()),
+        script_sha256: None,
+        workspace_bytes: 0,
+        files_written: 0,
+        engine: "sleep".to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.id.clone(),
+    };
+    serde_json::to_string(&result).unwrap_or_else(|_| "ok".to_string())
 }
 
-async fn run_python_task(task: &Task, sandbox: &SandboxConfig) -> String {
+async fn run_python_task(task: &Task, sandbox: &SandboxConfig, node_id: &str) -> String {
     // Execute a python script inside a workspace with MVP safety limits.
     tracing::info!(
         task_id = %task.id,
@@ -596,6 +665,7 @@ async fn run_python_task(task: &Task, sandbox: &SandboxConfig) -> String {
     let Some(script) = task.payload.script.as_deref() else {
         return "error: missing script".to_string();
     };
+    let script_hash = hash_bytes(script.as_bytes());
 
     let workspace = match create_workspace(task.id.as_str()) {
         Ok(path) => path,
@@ -614,10 +684,63 @@ async fn run_python_task(task: &Task, sandbox: &SandboxConfig) -> String {
         return format!("error: {err}");
     }
 
-    match execute_python(&workspace, sandbox).await {
-        Ok(output) => output,
-        Err(err) => format!("error: {err}"),
-    }
+    let (result, workspace_bytes, files_written) = match execute_python(&workspace, sandbox).await {
+        Ok(output) => (output, dir_size(&workspace), count_files(&workspace)),
+        Err(err) => {
+            let now = SystemTime::now();
+            let fallback = SandboxResult {
+                status: "error".to_string(),
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                duration_ms: 0,
+                started_at_ms: now
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                ended_at_ms: now
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                exit_code: None,
+                error: Some(err),
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+                stdout_sha256: hash_bytes(b""),
+                script_sha256: Some(script_hash),
+                workspace_bytes: 0,
+                files_written: 0,
+                engine: "python".to_string(),
+                node_id: node_id.to_string(),
+                task_id: task.id.clone(),
+            };
+            return serde_json::to_string(&fallback).unwrap_or_else(|_| "error".to_string());
+        }
+    };
+
+    let stdout_bytes = result.stdout.len() as u64;
+    let stderr_bytes = result.stderr.len() as u64;
+    let stdout_text = result.stdout.clone();
+    let payload = SandboxResult {
+        status: result.status,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        duration_ms: result.duration_ms,
+        started_at_ms: result.started_at_ms,
+        ended_at_ms: result.ended_at_ms,
+        exit_code: result.exit_code,
+        error: result.error,
+        stdout_bytes,
+        stderr_bytes,
+        stdout_sha256: hash_bytes(stdout_text.as_bytes()),
+        script_sha256: Some(script_hash),
+        workspace_bytes,
+        files_written,
+        engine: "python".to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.id.clone(),
+    };
+
+    serde_json::to_string(&payload).unwrap_or_else(|_| "error".to_string())
 }
 
 fn create_workspace(task_id: &str) -> Result<PathBuf, String> {
@@ -632,10 +755,7 @@ fn create_workspace(task_id: &str) -> Result<PathBuf, String> {
     Ok(workspace)
 }
 
-fn write_inputs(
-    workspace: &Path,
-    inputs: Option<&HashMap<String, String>>,
-) -> Result<(), String> {
+fn write_inputs(workspace: &Path, inputs: Option<&HashMap<String, String>>) -> Result<(), String> {
     // Inputs are stored only inside the workspace.
     if let Some(inputs) = inputs {
         for (name, content) in inputs {
@@ -656,7 +776,21 @@ fn write_script(workspace: &Path, script: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<String, String> {
+struct ExecutionOutput {
+    status: String,
+    stdout: String,
+    stderr: String,
+    duration_ms: u64,
+    started_at_ms: u128,
+    ended_at_ms: u128,
+    exit_code: Option<i32>,
+    error: Option<String>,
+}
+
+async fn execute_python(
+    workspace: &Path,
+    sandbox: &SandboxConfig,
+) -> Result<ExecutionOutput, String> {
     let python_bin = sandbox.python_bin.as_str();
     let script_path = workspace.join("task.py");
 
@@ -666,6 +800,7 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
     command.stderr(std::process::Stdio::piped());
 
     // Spawn process with lowered priority when possible.
+    let started_at = SystemTime::now();
     let mut child = command.spawn().map_err(|err| format!("spawn: {err}"))?;
     let stdout = child.stdout.take().ok_or("stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("stderr unavailable")?;
@@ -677,8 +812,8 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
     let workspace_limit = sandbox.workspace_limit_bytes;
     let size_monitor = tokio::spawn(async move {
         // Watch workspace size and kill on breach.
-        if let Err(err) = watch_workspace_limit(&workspace_path, workspace_limit, child_for_monitor)
-            .await
+        if let Err(err) =
+            watch_workspace_limit(&workspace_path, workspace_limit, child_for_monitor).await
         {
             tracing::warn!(error = %err, "workspace limit reached");
         }
@@ -711,7 +846,26 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
             let _ = child.lock().await.kill().await;
             stdout_handle.abort();
             stderr_handle.abort();
-            return Err("timeout".to_string());
+            let ended_at = SystemTime::now();
+            return Ok(ExecutionOutput {
+                status: "timeout".to_string(),
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                duration_ms: ended_at
+                    .duration_since(started_at)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+                started_at_ms: started_at
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                ended_at_ms: ended_at
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                exit_code: None,
+                error: Some("timeout".to_string()),
+            });
         }
     };
 
@@ -725,19 +879,54 @@ async fn execute_python(workspace: &Path, sandbox: &SandboxConfig) -> Result<Str
         .map_err(|_| "stderr join error".to_string())??;
     let stdout_text = String::from_utf8_lossy(&stdout_bytes).to_string();
     let stderr_text = String::from_utf8_lossy(&stderr_bytes).to_string();
+    let ended_at = SystemTime::now();
+    let duration_ms = ended_at
+        .duration_since(started_at)
+        .unwrap_or_default()
+        .as_millis() as u64;
 
     // CPU throttling hook: observe usage and react in future versions.
     tracing::info!(cpu_throttle = "not_enforced", "cpu monitor placeholder");
 
     if !status.success() {
-        return Err(format!("exit: {status}, stderr: {stderr_text}"));
+        return Ok(ExecutionOutput {
+            status: "error".to_string(),
+            stdout: stdout_text.trim().to_string(),
+            stderr: stderr_text.clone(),
+            duration_ms,
+            started_at_ms: started_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            ended_at_ms: ended_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            exit_code: status.code(),
+            error: Some(format!("exit: {status}, stderr: {stderr_text}")),
+        });
     }
 
     if !stderr_text.is_empty() {
         tracing::info!(stderr = %stderr_text, "python stderr");
     }
 
-    Ok(stdout_text.trim().to_string())
+    Ok(ExecutionOutput {
+        status: "ok".to_string(),
+        stdout: stdout_text.trim().to_string(),
+        stderr: stderr_text.trim().to_string(),
+        duration_ms,
+        started_at_ms: started_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        ended_at_ms: ended_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        exit_code: status.code(),
+        error: None,
+    })
 }
 
 fn build_command(python_bin: &str, script_path: &Path) -> Command {
@@ -845,6 +1034,28 @@ fn dir_size(path: &Path) -> u64 {
     size
 }
 
+fn count_files(path: &Path) -> u64 {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_dir() {
+                    count += count_files(&entry.path());
+                } else {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+fn hash_bytes(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
 fn is_safe_filename(name: &str) -> bool {
     // Reject paths or traversal attempts.
     if name.contains("..") || name.contains('/') || name.contains('\\') {
@@ -872,8 +1083,8 @@ fn load_config() -> Result<AgentConfig, String> {
     let config_path = resolve_config_path();
 
     let file_config = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)
-            .map_err(|err| format!("read config: {err}"))?;
+        let content =
+            std::fs::read_to_string(&config_path).map_err(|err| format!("read config: {err}"))?;
         toml::from_str::<FileConfig>(&content).map_err(|err| format!("parse config: {err}"))?
     } else {
         FileConfig::default()
@@ -943,9 +1154,9 @@ fn load_config() -> Result<AgentConfig, String> {
     })
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 fn save_config(path: &Path, config: &FileConfig) -> Result<(), String> {
-    let content =
-        toml::to_string_pretty(config).map_err(|err| format!("encode config: {err}"))?;
+    let content = toml::to_string_pretty(config).map_err(|err| format!("encode config: {err}"))?;
     std::fs::write(path, content).map_err(|err| format!("write config: {err}"))?;
     Ok(())
 }
@@ -961,11 +1172,7 @@ mod gui {
 
         let options = eframe::NativeOptions::default();
         let app = AgentGui::new(log_buffer);
-        let _ = eframe::run_native(
-            "Newral Agent",
-            options,
-            Box::new(|_cc| Ok(Box::new(app))),
-        );
+        let _ = eframe::run_native("Newral Agent", options, Box::new(|_cc| Ok(Box::new(app))));
     }
 
     struct AgentGui {
@@ -1061,7 +1268,8 @@ mod gui {
             self.running = true;
             self.stop = Some(stop);
             self.last_error = None;
-            self.log_buffer.push_line(LogLevel::Success, "Agent started");
+            self.log_buffer
+                .push_line(LogLevel::Success, "Agent started");
             tracing::info!("agent started");
         }
 
@@ -1088,7 +1296,9 @@ mod gui {
                 runner_sleep_secs: Some(self.base_config.runner_sleep.as_secs()),
                 python_bin: Some(self.base_config.sandbox.python_bin.clone()),
                 timeout_secs: Some(self.base_config.sandbox.timeout.as_secs()),
-                workspace_limit_mb: Some(self.base_config.sandbox.workspace_limit_bytes / 1024 / 1024),
+                workspace_limit_mb: Some(
+                    self.base_config.sandbox.workspace_limit_bytes / 1024 / 1024,
+                ),
                 stdout_limit_mb: Some(self.base_config.sandbox.stdout_limit_bytes / 1024 / 1024),
                 stderr_limit_mb: Some(self.base_config.sandbox.stderr_limit_bytes / 1024 / 1024),
             };
@@ -1179,26 +1389,31 @@ mod gui {
                 ui.separator();
 
                 let lines = self.log_buffer.snapshot();
-                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                    for entry in lines {
-                        let show = match entry.level {
-                            LogLevel::Info => self.show_info,
-                            LogLevel::Warn => self.show_warn,
-                            LogLevel::Error => self.show_error,
-                            LogLevel::Success => self.show_success,
-                        };
-                        if !show {
-                            continue;
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for entry in lines {
+                            let show = match entry.level {
+                                LogLevel::Info => self.show_info,
+                                LogLevel::Warn => self.show_warn,
+                                LogLevel::Error => self.show_error,
+                                LogLevel::Success => self.show_success,
+                            };
+                            if !show {
+                                continue;
+                            }
+                            let color = match entry.level {
+                                LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
+                                LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
+                                LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
+                                LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
+                            };
+                            ui.colored_label(
+                                color,
+                                format!("[{}] {}", entry.level.label(), entry.message),
+                            );
                         }
-                        let color = match entry.level {
-                            LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
-                            LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
-                            LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
-                            LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
-                        };
-                        ui.colored_label(color, format!("[{}] {}", entry.level.label(), entry.message));
-                    }
-                });
+                    });
             });
 
             ctx.request_repaint_after(Duration::from_millis(200));

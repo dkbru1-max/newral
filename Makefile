@@ -24,10 +24,25 @@ restore:
 	./scripts/restore.sh $(BACKUP)
 
 fmt:
-	@echo "fmt: placeholder"
+	cargo fmt --all --manifest-path services/common/Cargo.toml
+	cargo fmt --all --manifest-path services/identity-service/Cargo.toml
+	cargo fmt --all --manifest-path services/scheduler-service/Cargo.toml
+	cargo fmt --all --manifest-path services/telemetry-service/Cargo.toml
+	cargo fmt --all --manifest-path services/validator-service/Cargo.toml
+	cargo fmt --all --manifest-path client/agent/Cargo.toml
 
 test:
-	@echo "test: placeholder"
+	cargo test --manifest-path services/common/Cargo.toml
+	cargo test --manifest-path services/identity-service/Cargo.toml
+	cargo test --manifest-path services/scheduler-service/Cargo.toml
+	cargo test --manifest-path services/telemetry-service/Cargo.toml
+	cargo test --manifest-path services/validator-service/Cargo.toml
+	cargo test --manifest-path client/agent/Cargo.toml
 
 lint:
-	@echo "lint: placeholder"
+	cargo clippy --manifest-path services/common/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path services/identity-service/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path services/scheduler-service/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path services/telemetry-service/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path services/validator-service/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path client/agent/Cargo.toml --all-targets -- -D warnings

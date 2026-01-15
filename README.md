@@ -1,5 +1,11 @@
 # Newral (working title)
 
+## Repo structure
+- `services/common`: shared startup helpers (tracing, env parsing, shutdown).
+- `services/*/src`: split into `app`, `handlers`, `service`, `db`, `models`, `state`.
+- `client/agent`: Rust agent with sandbox execution and GUI.
+- `docs/REFACTORING_NOTES.md`: rationale for refactor decisions.
+
 ## Local dev
 1) Copy `.env.example` to `.env` and set passwords.
 2) Start infrastructure: `docker compose up -d`
@@ -9,6 +15,13 @@
 6) Stop: `docker compose down`
 
 Kafka is exposed on host port `9092`, but inside the Docker network use `kafka:19092`.
+
+Quality checks (per service Rust crates):
+```bash
+make fmt
+make lint
+make test
+```
 
 ## Portal access (LAN)
 The gateway publishes HTTP on port `80` so the portal is reachable from another machine.
