@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose
 
-.PHONY: up down ps logs fmt test lint migrate backup restore
+.PHONY: up down ps logs fmt test lint migrate backup restore version version-patch version-minor version-major version-set
 
 up:
 	$(COMPOSE) up -d
@@ -46,3 +46,18 @@ lint:
 	cargo clippy --manifest-path services/telemetry-service/Cargo.toml --all-targets -- -D warnings
 	cargo clippy --manifest-path services/validator-service/Cargo.toml --all-targets -- -D warnings
 	cargo clippy --manifest-path client/agent/Cargo.toml --all-targets -- -D warnings
+
+version:
+	./scripts/version.sh current
+
+version-patch:
+	./scripts/version.sh patch
+
+version-minor:
+	./scripts/version.sh minor
+
+version-major:
+	./scripts/version.sh major
+
+version-set:
+	./scripts/version.sh set $(VERSION)
