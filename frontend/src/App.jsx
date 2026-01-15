@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
-const kpis = [
-  { label: "Connected Agents", value: "1,284", trend: "+12%" },
-  { label: "Tasks Completed", value: "48,210", trend: "+6%" },
-  { label: "Avg Task Time", value: "4.2s", trend: "-8%" },
+const baseKpis = [
+  { label: "Connected Agents", trend: "live" },
+  { label: "Tasks Completed", trend: "live" },
+  { label: "Avg Task Time", value: "4.2s", trend: "placeholder" },
   { label: "Uptime", value: "99.94%", trend: "stable" },
-  { label: "AI Mode", value: "AI_OFF", trend: "policy gated" }
+  { label: "AI Mode", trend: "policy gated" }
 ];
 
 const sections = [
   { id: "dashboard", title: "Dashboard" },
-  { id: "investor-demo", title: "Investor Demo" },
+  { id: "demo", title: "Demo" },
   { id: "agents", title: "Agents" },
   { id: "tasks", title: "Tasks" },
   { id: "monitoring", title: "Monitoring" },
@@ -19,13 +19,13 @@ const sections = [
   { id: "system-health", title: "System Health" }
 ];
 
-const agents = [
+const initialAgents = [
   { id: "node-01", status: "online", region: "EU-West", reputation: "0.8" },
   { id: "node-14", status: "online", region: "NA-East", reputation: "0.9" },
   { id: "node-27", status: "idle", region: "AP-South", reputation: "0.7" }
 ];
 
-const tasks = [
+const initialTasks = [
   { id: "task-1001", status: "queued", priority: "high" },
   { id: "task-1002", status: "running", priority: "normal" },
   { id: "task-1003", status: "waiting", priority: "low" }
@@ -46,6 +46,19 @@ const healthTargets = [
 
 function App() {
   const [health, setHealth] = useState({});
+  const [liveAgents, setLiveAgents] = useState(initialAgents);
+  const [liveTasks, setLiveTasks] = useState(initialTasks);
+  const [liveQueue, setLiveQueue] = useState({
+    queued: 0,
+    running: 0,
+    completed: 0
+  });
+  const [liveLoad, setLiveLoad] = useState({
+    running: 0,
+    queued: 0,
+    completed_last_min: 0
+  });
+  const [liveAiMode, setLiveAiMode] = useState("AI_OFF");
   const [demoStatus, setDemoStatus] = useState({
     total: 0,
     completed: 0,
@@ -55,6 +68,7 @@ function App() {
   const [demoResult, setDemoResult] = useState([]);
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoError, setDemoError] = useState("");
+  const [summaryError, setSummaryError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
@@ -89,6 +103,88 @@ function App() {
     return () => {
       isMounted = false;
       clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    let eventSource = null;
+    let reconnectTimer = null;
+
+    const applySummary = (summary) => {
+      if (!summary || !isMounted) {
+        return;
+      }
+      if (Array.isArray(summary.agents)) {
+        setLiveAgents(summary.agents);
+      }
+      if (Array.isArray(summary.tasks)) {
+        setLiveTasks(summary.tasks);
+      }
+      if (summary.queue) {
+        setLiveQueue({
+          queued: summary.queue.queued ?? 0,
+          running: summary.queue.running ?? 0,
+          completed: summary.queue.completed ?? 0
+        });
+      }
+      if (summary.load) {
+        setLiveLoad({
+          running: summary.load.running ?? 0,
+          queued: summary.load.queued ?? 0,
+          completed_last_min: summary.load.completed_last_min ?? 0
+        });
+      }
+      if (summary.ai_mode) {
+        setLiveAiMode(summary.ai_mode);
+      }
+    };
+
+    const fetchSummary = async () => {
+      try {
+        const response = await fetch("/api/scheduler/v1/summary");
+        if (!response.ok) {
+          throw new Error("summary fetch failed");
+        }
+        const data = await response.json();
+        applySummary(data);
+        setSummaryError("");
+      } catch (error) {
+        setSummaryError("Live summary unavailable");
+      }
+    };
+
+    const connect = () => {
+      eventSource = new EventSource("/api/scheduler/v1/stream");
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (!data?.error) {
+            applySummary(data);
+            setSummaryError("");
+          }
+        } catch (error) {
+          setSummaryError("Live summary parse error");
+        }
+      };
+      eventSource.onerror = () => {
+        eventSource.close();
+        fetchSummary();
+        reconnectTimer = window.setTimeout(connect, 2000);
+      };
+    };
+
+    fetchSummary();
+    connect();
+
+    return () => {
+      isMounted = false;
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+      }
     };
   }, []);
 
@@ -149,6 +245,36 @@ function App() {
       setDemoLoading(false);
     }
   };
+
+  const connectedAgents = liveAgents.filter(
+    (agent) => agent.status === "online"
+  ).length;
+  const kpis = baseKpis.map((metric) => {
+    if (metric.label === "Connected Agents") {
+      return {
+        ...metric,
+        value: connectedAgents.toLocaleString()
+      };
+    }
+    if (metric.label === "Tasks Completed") {
+      return {
+        ...metric,
+        value: liveQueue.completed.toLocaleString()
+      };
+    }
+    if (metric.label === "AI Mode") {
+      return {
+        ...metric,
+        value: liveAiMode
+      };
+    }
+    return metric;
+  });
+
+  const loadPercent = Math.min(
+    100,
+    Math.round(((liveLoad.running + liveLoad.queued) / 20) * 100)
+  );
 
   const [activeSection, setActiveSection] = useState(sections[0]?.id ?? "");
   const [manualActive, setManualActive] = useState("");
@@ -217,7 +343,7 @@ function App() {
           <img src="/newral_big_logo.png" alt="Newral" className="logo" />
           <div className="brand-copy">
             <p className="eyebrow">Newral Portal</p>
-            <h1>Investor View</h1>
+            <h1>Demo View</h1>
           </div>
         </div>
         <nav className="nav-links">
@@ -257,6 +383,7 @@ function App() {
               <h2>Dashboard</h2>
               <p>Snapshot of the MVP backbone and AI governance.</p>
             </div>
+            {summaryError && <p className="error">{summaryError}</p>}
             <div className="metric-grid">
               {kpis.map((metric) => (
                 <div key={metric.label} className="metric-card">
@@ -293,13 +420,11 @@ function App() {
           </section>
 
           <section
-            id="investor-demo"
-            className={`section${
-              flashSection === "investor-demo" ? " flash" : ""
-            }`}
+            id="demo"
+            className={`section${flashSection === "demo" ? " flash" : ""}`}
           >
             <div className="section-header">
-              <h2>Investor Demo</h2>
+              <h2>Demo Project</h2>
               <p>Launch the wordcount demo and track its progress.</p>
             </div>
             <div className="demo-card">
@@ -386,16 +511,24 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {agents.map((agent) => (
-                    <tr key={agent.id}>
-                      <td>{agent.id}</td>
-                      <td className={`status ${agent.status}`}>
-                        {agent.status}
+                  {liveAgents.length === 0 ? (
+                    <tr>
+                      <td colSpan="4" className="muted">
+                        No agents connected.
                       </td>
-                      <td>{agent.region}</td>
-                      <td>{agent.reputation}</td>
                     </tr>
-                  ))}
+                  ) : (
+                    liveAgents.map((agent) => (
+                      <tr key={agent.id}>
+                        <td>{agent.id}</td>
+                        <td className={`status ${agent.status}`}>
+                          {agent.status}
+                        </td>
+                        <td>{agent.region}</td>
+                        <td>{agent.reputation}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -410,13 +543,20 @@ function App() {
               <p>Queue preview with priority tagging.</p>
             </div>
             <div className="card-grid">
-              {tasks.map((task) => (
-                <div key={task.id} className="task-card">
-                  <span>{task.id}</span>
-                  <strong>{task.status}</strong>
-                  <em>{task.priority}</em>
+              {liveTasks.length === 0 ? (
+                <div className="task-card">
+                  <strong>No tasks queued</strong>
+                  <em className="muted">Waiting for incoming work.</em>
                 </div>
-              ))}
+              ) : (
+                liveTasks.map((task) => (
+                  <div key={task.id} className="task-card">
+                    <span>{task.id}</span>
+                    <strong>{task.status}</strong>
+                    <em>{task.priority}</em>
+                  </div>
+                ))
+              )}
             </div>
           </section>
 
@@ -456,10 +596,14 @@ function App() {
                   <div>
                     <span>Network load</span>
                     <div className="bar">
-                      <div style={{ width: "71%" }}></div>
+                      <div style={{ width: `${loadPercent}%` }}></div>
                     </div>
                   </div>
                 </div>
+                <p className="muted">
+                  Running: {liveLoad.running} · Queued: {liveLoad.queued} ·
+                  Throughput/min: {liveLoad.completed_last_min}
+                </p>
               </div>
             </div>
           </section>
@@ -473,19 +617,35 @@ function App() {
               <p>Governance settings with policy enforcement.</p>
             </div>
             <div className="card-grid">
-              <div className="mode-card active">
+              <div
+                className={`mode-card${
+                  liveAiMode === "AI_OFF" ? " active" : ""
+                }`}
+              >
                 <h3>AI_OFF</h3>
                 <p>Deterministic scheduling only, no AI proposals.</p>
               </div>
-              <div className="mode-card">
+              <div
+                className={`mode-card${
+                  liveAiMode === "AI_ADVISORY" ? " active" : ""
+                }`}
+              >
                 <h3>AI_ADVISORY</h3>
                 <p>AI suggests actions, policy gate still decides.</p>
               </div>
-              <div className="mode-card">
+              <div
+                className={`mode-card${
+                  liveAiMode === "AI_ASSISTED" ? " active" : ""
+                }`}
+              >
                 <h3>AI_ASSISTED</h3>
                 <p>Low-risk actions automated, critical tasks gated.</p>
               </div>
-              <div className="mode-card">
+              <div
+                className={`mode-card${
+                  liveAiMode === "AI_FULL" ? " active" : ""
+                }`}
+              >
                 <h3>AI_FULL</h3>
                 <p>End-to-end AI orchestration with hard limits.</p>
               </div>

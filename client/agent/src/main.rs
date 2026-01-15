@@ -50,6 +50,7 @@ struct Agent {
     config: std::sync::Arc<AgentConfig>,
     client: Client,
     runner: std::sync::Arc<dyn TaskRunner + Send + Sync>,
+    runtime: Option<AgentRuntime>,
 }
 
 #[derive(Serialize)]
@@ -145,9 +146,34 @@ impl StopSignal {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogLevel {
+    Info,
+    Warn,
+    Error,
+    Success,
+}
+
+impl LogLevel {
+    fn label(&self) -> &'static str {
+        match self {
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+            LogLevel::Success => "success",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LogEntry {
+    level: LogLevel,
+    message: String,
+}
+
 #[derive(Clone)]
 struct LogBuffer {
-    lines: Arc<StdMutex<VecDeque<String>>>,
+    lines: Arc<StdMutex<VecDeque<LogEntry>>>,
     limit: usize,
 }
 
@@ -159,15 +185,22 @@ impl LogBuffer {
         }
     }
 
-    fn push(&self, line: String) {
+    fn push_entry(&self, level: LogLevel, message: String) {
         let mut lines = self.lines.lock().unwrap();
-        lines.push_back(line);
+        lines.push_back(LogEntry { level, message });
         while lines.len() > self.limit {
             lines.pop_front();
         }
     }
 
-    fn snapshot(&self) -> Vec<String> {
+    fn push_line(&self, level: LogLevel, line: &str) {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            self.push_entry(level, trimmed.to_string());
+        }
+    }
+
+    fn snapshot(&self) -> Vec<LogEntry> {
         self.lines.lock().unwrap().iter().cloned().collect()
     }
 }
@@ -179,7 +212,7 @@ struct LogWriter {
 impl Write for LogWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let line = String::from_utf8_lossy(buf).to_string();
-        self.buffer.push(line);
+        self.buffer.push_line(LogLevel::Info, line.as_str());
         Ok(buf.len())
     }
 
@@ -198,6 +231,37 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
     }
 }
 
+#[derive(Default, Clone)]
+struct AgentRuntimeState {
+    connected: bool,
+    current_task: Option<String>,
+    last_result: Option<String>,
+    last_error: Option<String>,
+}
+
+#[derive(Clone)]
+struct AgentRuntime {
+    status: Arc<Mutex<AgentRuntimeState>>,
+    logs: LogBuffer,
+}
+
+impl AgentRuntime {
+    fn new(logs: LogBuffer) -> Self {
+        Self {
+            status: Arc::new(Mutex::new(AgentRuntimeState::default())),
+            logs,
+        }
+    }
+
+    fn with_state(logs: LogBuffer, status: Arc<Mutex<AgentRuntimeState>>) -> Self {
+        Self { status, logs }
+    }
+
+    fn log(&self, level: LogLevel, message: &str) {
+        self.logs.push_line(level, message);
+    }
+}
+
 fn init_tracing(log_buffer: Option<LogBuffer>) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let builder = FmtSubscriber::builder().with_env_filter(filter).with_ansi(false);
@@ -209,8 +273,54 @@ fn init_tracing(log_buffer: Option<LogBuffer>) {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
+fn should_run_service() -> bool {
+    env::args().any(|arg| arg == "--service")
+}
+
+fn run_service_mode() {
+    init_tracing(None);
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(err) => {
+            tracing::error!(error = %err, "failed to load config");
+            return;
+        }
+    };
+    let agent = Agent {
+        config: std::sync::Arc::new(config),
+        client: Client::new(),
+        runner: std::sync::Arc::new(SandboxRunner {}),
+        runtime: None,
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    runtime.block_on(run_agent_until_stop(agent));
+}
+
+async fn run_agent_until_stop(agent: Agent) {
+    let stop = StopSignal::new();
+    let handles = spawn_agent(agent, stop.clone());
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutdown requested");
+            stop.stop();
+        }
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+}
+
 #[cfg(feature = "gui")]
 fn main() {
+    if should_run_service() {
+        run_service_mode();
+        return;
+    }
     gui::run();
 }
 
@@ -232,24 +342,47 @@ async fn main() {
         config: std::sync::Arc::new(config),
         client: Client::new(),
         runner: std::sync::Arc::new(SandboxRunner {}),
+        runtime: None,
     };
 
-    let stop = StopSignal::new();
-    let handles = spawn_agent(agent, stop.clone());
-
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutdown requested");
-            stop.stop();
-        }
-    }
-
-    for handle in handles {
-        let _ = handle.await;
-    }
+    run_agent_until_stop(agent).await;
 }
 
 impl Agent {
+    fn log(&self, level: LogLevel, message: &str) {
+        if let Some(runtime) = &self.runtime {
+            runtime.log(level, message);
+        }
+    }
+
+    async fn set_connected(&self, connected: bool) {
+        if let Some(runtime) = &self.runtime {
+            let mut status = runtime.status.lock().await;
+            status.connected = connected;
+        }
+    }
+
+    async fn set_current_task(&self, task_id: Option<String>) {
+        if let Some(runtime) = &self.runtime {
+            let mut status = runtime.status.lock().await;
+            status.current_task = task_id;
+        }
+    }
+
+    async fn set_last_result(&self, result: Option<String>) {
+        if let Some(runtime) = &self.runtime {
+            let mut status = runtime.status.lock().await;
+            status.last_result = result;
+        }
+    }
+
+    async fn set_last_error(&self, message: Option<String>) {
+        if let Some(runtime) = &self.runtime {
+            let mut status = runtime.status.lock().await;
+            status.last_error = message;
+        }
+    }
+
     async fn heartbeat_loop(self, stop: StopSignal) {
         loop {
             if stop.stopped() {
@@ -257,6 +390,10 @@ impl Agent {
             }
             if let Err(err) = self.send_heartbeat().await {
                 tracing::warn!(error = %err, "heartbeat failed");
+                self.log(LogLevel::Warn, "Heartbeat failed");
+                self.set_connected(false).await;
+                self.set_last_error(Some(format!("heartbeat: {err}")))
+                    .await;
             }
             if stop.sleep_or_stop(self.config.heartbeat_interval).await {
                 break;
@@ -280,6 +417,11 @@ impl Agent {
             status = response.status().as_u16(),
             "heartbeat sent"
         );
+        if response.status().is_success() {
+            self.log(LogLevel::Info, "Heartbeat ok");
+            self.set_connected(true).await;
+            self.set_last_error(None).await;
+        }
         Ok(())
     }
 
@@ -290,20 +432,37 @@ impl Agent {
             }
             match self.request_task().await {
                 Ok(Some(task)) => {
+                    self.set_current_task(Some(task.id.clone())).await;
+                    self.log(LogLevel::Info, &format!("Task start {}", task.id));
                     // Runner abstracts future sandboxed execution.
                     let result = self
                         .runner
                         .run(&task, &self.config.sandbox, self.config.runner_sleep)
                         .await;
+                    if result.starts_with("error:") {
+                        self.log(LogLevel::Error, &format!("Task failed {}", task.id));
+                        self.set_last_error(Some(result.clone())).await;
+                    } else {
+                        self.log(LogLevel::Success, &format!("Task done {}", task.id));
+                    }
                     if let Err(err) = self.submit_result(&task, &result).await {
                         tracing::warn!(error = %err, "submit failed");
+                        self.log(LogLevel::Warn, "Result submit failed");
+                        self.set_last_error(Some(format!("submit: {err}")))
+                            .await;
+                    } else {
+                        self.set_last_result(Some(result.clone())).await;
                     }
+                    self.set_current_task(None).await;
                 }
                 Ok(None) => {
                     tracing::debug!("no task available");
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "task request failed");
+                    self.log(LogLevel::Warn, "Task request failed");
+                    self.set_last_error(Some(format!("request: {err}")))
+                        .await;
                 }
             }
 
@@ -365,6 +524,7 @@ impl Agent {
             status = %body.status,
             "submitted result"
         );
+        self.log(LogLevel::Success, "Result submitted");
         Ok(())
     }
 }
@@ -594,6 +754,13 @@ fn build_command(python_bin: &str, script_path: &Path) -> Command {
         // Windows: priority lowering is a future enhancement.
         let mut command = Command::new(python_bin);
         command.arg(script_path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Hide console window for sandbox processes.
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         command
     }
 }
@@ -804,6 +971,7 @@ mod gui {
     struct AgentGui {
         config_path: PathBuf,
         log_buffer: LogBuffer,
+        status_state: Arc<Mutex<AgentRuntimeState>>,
         base_config: AgentConfig,
         node_id: String,
         protocol: String,
@@ -812,6 +980,10 @@ mod gui {
         stop: Option<StopSignal>,
         runtime: tokio::runtime::Runtime,
         last_error: Option<String>,
+        show_info: bool,
+        show_warn: bool,
+        show_error: bool,
+        show_success: bool,
     }
 
     impl AgentGui {
@@ -833,6 +1005,7 @@ mod gui {
             });
 
             let (protocol, host) = split_url(&base_config.scheduler_url);
+            let status_state = Arc::new(Mutex::new(AgentRuntimeState::default()));
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -842,6 +1015,7 @@ mod gui {
             Self {
                 config_path,
                 log_buffer,
+                status_state,
                 base_config: base_config.clone(),
                 node_id: base_config.node_id,
                 protocol,
@@ -850,6 +1024,10 @@ mod gui {
                 stop: None,
                 runtime,
                 last_error: None,
+                show_info: true,
+                show_warn: true,
+                show_error: true,
+                show_success: true,
             }
         }
 
@@ -866,10 +1044,13 @@ mod gui {
             config.scheduler_url = self.scheduler_url();
 
             let stop = StopSignal::new();
+            let runtime_state = self.status_state.clone();
+            let runtime = AgentRuntime::with_state(self.log_buffer.clone(), runtime_state);
             let agent = Agent {
                 config: std::sync::Arc::new(config),
                 client: Client::new(),
                 runner: std::sync::Arc::new(SandboxRunner {}),
+                runtime: Some(runtime),
             };
 
             let stop_clone = stop.clone();
@@ -880,6 +1061,7 @@ mod gui {
             self.running = true;
             self.stop = Some(stop);
             self.last_error = None;
+            self.log_buffer.push_line(LogLevel::Success, "Agent started");
             tracing::info!("agent started");
         }
 
@@ -888,6 +1070,12 @@ mod gui {
                 stop.stop();
             }
             self.running = false;
+            {
+                let mut status = self.runtime.block_on(self.status_state.lock());
+                status.connected = false;
+                status.current_task = None;
+            }
+            self.log_buffer.push_line(LogLevel::Warn, "Agent stopped");
             tracing::info!("agent stopped");
         }
 
@@ -915,8 +1103,30 @@ mod gui {
 
     impl eframe::App for AgentGui {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            let status_snapshot = self.runtime.block_on(self.status_state.lock()).clone();
+            let connected = status_snapshot.connected;
+            let current_task = status_snapshot
+                .current_task
+                .clone()
+                .unwrap_or_else(|| "idle".to_string());
+            let last_result = status_snapshot
+                .last_result
+                .clone()
+                .unwrap_or_else(|| "n/a".to_string());
+            let last_error = status_snapshot
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "none".to_string());
+            let status_color = if connected {
+                egui::Color32::from_rgb(31, 139, 76)
+            } else {
+                egui::Color32::from_rgb(148, 158, 170)
+            };
+
             egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    ui.colored_label(status_color, "●");
+                    ui.label(if connected { "Connected" } else { "Offline" });
                     ui.label("Newral Agent");
                     if self.running {
                         if ui.button("Stop").clicked() {
@@ -929,6 +1139,12 @@ mod gui {
             });
 
             egui::SidePanel::left("settings_panel").show(ctx, |ui| {
+                ui.heading("Status");
+                ui.label(format!("Task: {}", current_task));
+                ui.label(format!("Last result: {}", last_result));
+                ui.label(format!("Last error: {}", last_error));
+                ui.separator();
+
                 ui.heading("Settings");
                 ui.label("Node ID");
                 ui.text_edit_singleline(&mut self.node_id);
@@ -946,6 +1162,13 @@ mod gui {
                     self.save_settings();
                 }
 
+                ui.separator();
+                ui.heading("Log filters");
+                ui.checkbox(&mut self.show_info, "Info");
+                ui.checkbox(&mut self.show_warn, "Warn");
+                ui.checkbox(&mut self.show_error, "Error");
+                ui.checkbox(&mut self.show_success, "Success");
+
                 if let Some(err) = &self.last_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
@@ -957,8 +1180,23 @@ mod gui {
 
                 let lines = self.log_buffer.snapshot();
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                    for line in lines {
-                        ui.label(line);
+                    for entry in lines {
+                        let show = match entry.level {
+                            LogLevel::Info => self.show_info,
+                            LogLevel::Warn => self.show_warn,
+                            LogLevel::Error => self.show_error,
+                            LogLevel::Success => self.show_success,
+                        };
+                        if !show {
+                            continue;
+                        }
+                        let color = match entry.level {
+                            LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
+                            LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
+                            LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
+                            LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
+                        };
+                        ui.colored_label(color, format!("[{}] {}", entry.level.label(), entry.message));
                     }
                 });
             });

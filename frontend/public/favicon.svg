@@ -1,14 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#f26b3a" />
-      <stop offset="100%" stop-color="#f3b62a" />
-    </linearGradient>
-  </defs>
-  <rect width="128" height="128" rx="28" fill="#121820" />
-  <circle cx="64" cy="64" r="46" fill="url(#g)" />
-  <path
-    d="M48 84V44h10l20 26V44h10v40h-10L58 58v26H48z"
-    fill="#121820"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 1024">
+  <image
+    href="/newral_big_logo.png"
+    width="1536"
+    height="1024"
+    preserveAspectRatio="xMinYMin slice"
   />
 </svg>

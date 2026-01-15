@@ -3,13 +3,20 @@ mod policy;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{sse::Event, sse::KeepAlive, sse::Sse, IntoResponse},
     routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::{env, net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    env,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
+use tokio::sync::{broadcast, Mutex};
 use tokio_postgres::{error::SqlState, Client, NoTls};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -19,6 +26,15 @@ use crate::policy::{PolicyConfig, PolicyDecision, PolicyEngine, ProposalSource, 
 struct AppState {
     policy: Arc<PolicyEngine>,
     db: Arc<Mutex<Client>>,
+    heartbeats: Arc<Mutex<HashMap<String, AgentHeartbeat>>>,
+    updates: broadcast::Sender<()>,
+    stream_interval: Duration,
+    heartbeat_ttl: Duration,
+}
+
+#[derive(Clone)]
+struct AgentHeartbeat {
+    last_seen: SystemTime,
 }
 
 #[allow(dead_code)]
@@ -137,6 +153,46 @@ struct TaskSubmitRequest {
 #[derive(Serialize)]
 struct TaskSubmitResponse {
     status: &'static str,
+}
+
+#[derive(Serialize)]
+struct LiveSummary {
+    updated_at: String,
+    ai_mode: String,
+    agents: Vec<AgentSummary>,
+    tasks: Vec<TaskSummary>,
+    queue: TaskQueueSummary,
+    load: LoadSummary,
+}
+
+#[derive(Serialize)]
+struct AgentSummary {
+    id: String,
+    status: String,
+    last_seen_secs: u64,
+    region: String,
+    reputation: String,
+}
+
+#[derive(Serialize)]
+struct TaskSummary {
+    id: String,
+    status: String,
+    priority: String,
+}
+
+#[derive(Default, Serialize)]
+struct TaskQueueSummary {
+    queued: u64,
+    running: u64,
+    completed: u64,
+}
+
+#[derive(Default, Serialize)]
+struct LoadSummary {
+    running: u64,
+    queued: u64,
+    completed_last_min: u64,
 }
 
 #[derive(Deserialize)]
@@ -264,14 +320,29 @@ async fn main() {
     // Load policy limits from env for deterministic enforcement.
     let policy_config = PolicyConfig::from_env();
     let policy = PolicyEngine::new(policy_config);
+    let stream_interval = env::var("LIVE_UPDATE_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1000);
+    let heartbeat_ttl = env::var("AGENT_HEARTBEAT_TTL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30);
+    let (updates, _) = broadcast::channel(32);
     let state = AppState {
         policy: Arc::new(policy),
         db: Arc::new(Mutex::new(db)),
+        heartbeats: Arc::new(Mutex::new(HashMap::new())),
+        updates,
+        stream_interval: Duration::from_millis(stream_interval),
+        heartbeat_ttl: Duration::from_secs(heartbeat_ttl),
     };
 
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/v1/summary", get(summary))
+        .route("/v1/stream", get(stream))
         .route("/v1/tasks/request", post(request_task))
         .route("/v1/tasks/submit", post(submit_task))
         .route("/v1/heartbeat", post(heartbeat))
@@ -303,6 +374,58 @@ async fn readyz() -> StatusCode {
     StatusCode::OK
 }
 
+async fn summary(State(state): State<AppState>) -> impl IntoResponse {
+    match build_live_summary(&state).await {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "summary_error",
+                message: err,
+                reasons: Vec::new(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn stream(
+    State(state): State<AppState>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let mut updates = state.updates.subscribe();
+    let interval = state.stream_interval;
+
+    let stream = async_stream::stream! {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {},
+                _ = updates.recv() => {},
+            }
+
+            match build_live_summary(&state).await {
+                Ok(summary) => {
+                    if let Ok(event) = Event::default().json_data(summary) {
+                        yield Ok(event);
+                    }
+                }
+                Err(err) => {
+                    let fallback = serde_json::json!({ "error": err });
+                    if let Ok(event) = Event::default().json_data(fallback) {
+                        yield Ok(event);
+                    }
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
 async fn request_task(
     State(state): State<AppState>,
     Json(payload): Json<TaskRequest>,
@@ -324,7 +447,7 @@ async fn request_task(
         "policy evaluation"
     );
 
-    match decision {
+    let response = match decision {
         PolicyDecision::Denied { reasons } => (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -417,7 +540,10 @@ async fn request_task(
                 .into_response(),
             }
         }
-    }
+    };
+
+    notify_update(&state);
+    response
 }
 
 async fn submit_task(
@@ -566,15 +692,27 @@ async fn submit_task(
             .into_response();
     }
 
+    notify_update(&state);
     Json(TaskSubmitResponse { status: "ok" }).into_response()
 }
 
-async fn heartbeat(Json(payload): Json<HeartbeatRequest>) -> Json<HeartbeatResponse> {
-    // Heartbeats are logged for liveness tracking.
-    tracing::info!(
-        node_id = payload.node_id.as_deref().unwrap_or("unknown"),
-        "heartbeat received"
-    );
+async fn heartbeat(
+    State(state): State<AppState>,
+    Json(payload): Json<HeartbeatRequest>,
+) -> Json<HeartbeatResponse> {
+    let node_id = payload.node_id.as_deref().unwrap_or("unknown").to_string();
+    {
+        let mut heartbeats = state.heartbeats.lock().await;
+        heartbeats.insert(
+            node_id.clone(),
+            AgentHeartbeat {
+                last_seen: SystemTime::now(),
+            },
+        );
+    }
+
+    tracing::info!(node_id = node_id.as_str(), "heartbeat received");
+    notify_update(&state);
     Json(HeartbeatResponse { status: "ok" })
 }
 
@@ -707,6 +845,7 @@ async fn start_demo_wordcount(
             .into_response();
     }
 
+    notify_update(&state);
     (
         StatusCode::OK,
         Json(DemoStartResponse {
@@ -930,6 +1069,148 @@ async fn result_demo_wordcount(State(state): State<AppState>) -> impl IntoRespon
         }),
     )
         .into_response()
+}
+
+fn notify_update(state: &AppState) {
+    let _ = state.updates.send(());
+}
+
+async fn build_live_summary(state: &AppState) -> Result<LiveSummary, String> {
+    let now = SystemTime::now();
+    let agents = {
+        let heartbeats = state.heartbeats.lock().await;
+        heartbeats
+            .iter()
+            .map(|(id, heartbeat)| {
+                let elapsed = now
+                    .duration_since(heartbeat.last_seen)
+                    .unwrap_or_default()
+                    .as_secs();
+                let status = if elapsed <= state.heartbeat_ttl.as_secs() {
+                    "online"
+                } else {
+                    "idle"
+                };
+                AgentSummary {
+                    id: id.clone(),
+                    status: status.to_string(),
+                    last_seen_secs: elapsed,
+                    region: "local".to_string(),
+                    reputation: "0.8".to_string(),
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut db = state.db.lock().await;
+    let projects = fetch_projects(&mut db).await?;
+    let mut queue = TaskQueueSummary::default();
+    let mut load = LoadSummary::default();
+    let mut tasks = Vec::new();
+
+    for project in projects.iter() {
+        let schema = schema_name_for_project(&mut db, project).await?;
+        let counts = task_counts(&mut db, &schema).await?;
+        queue.queued += counts.queued;
+        queue.running += counts.running;
+        queue.completed += counts.completed;
+
+        load.running += counts.running;
+        load.queued += counts.queued;
+        load.completed_last_min += task_completed_last_min(&mut db, &schema).await?;
+
+        if tasks.is_empty() {
+            tasks = fetch_recent_tasks(&mut db, &schema).await?;
+        }
+    }
+
+    let ai_mode = state.policy.config().ai_mode.to_string();
+    let updated_at = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+
+    Ok(LiveSummary {
+        updated_at,
+        ai_mode,
+        agents,
+        tasks,
+        queue,
+        load,
+    })
+}
+
+async fn fetch_projects(db: &mut Client) -> Result<Vec<Project>, String> {
+    let rows = db
+        .query(SQL_LIST_PROJECTS, &[])
+        .await
+        .map_err(|err| format!("list projects failed: {err}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| Project {
+            id: row.get("id"),
+            name: row.get("name"),
+            description: row.get("description"),
+            owner_id: row.get("owner_id"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
+async fn fetch_recent_tasks(db: &mut Client, schema: &str) -> Result<Vec<TaskSummary>, String> {
+    let sql = format!(
+        "SELECT id, status FROM {}.tasks ORDER BY updated_at DESC, id DESC LIMIT 6",
+        schema
+    );
+    let rows = db
+        .query(sql.as_str(), &[])
+        .await
+        .map_err(|err| format!("list tasks failed: {err}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TaskSummary {
+            id: format!("task-{}", row.get::<_, i64>("id")),
+            status: row.get::<_, String>("status"),
+            priority: "normal".to_string(),
+        })
+        .collect())
+}
+
+async fn task_counts(db: &mut Client, schema: &str) -> Result<TaskQueueSummary, String> {
+    let sql = task_status_counts_sql(schema);
+    let rows = db
+        .query(sql.as_str(), &[])
+        .await
+        .map_err(|err| format!("status counts failed: {err}"))?;
+
+    let mut summary = TaskQueueSummary::default();
+    for row in rows {
+        let status: String = row.get("status");
+        let count: i64 = row.get("count");
+        match status.as_str() {
+            "queued" => summary.queued += count.max(0) as u64,
+            "running" => summary.running += count.max(0) as u64,
+            "done" | "completed" => summary.completed += count.max(0) as u64,
+            _ => {}
+        }
+    }
+    Ok(summary)
+}
+
+async fn task_completed_last_min(db: &mut Client, schema: &str) -> Result<u64, String> {
+    let sql = format!(
+        "SELECT COUNT(*) AS count FROM {}.tasks WHERE status IN ('done', 'completed') AND updated_at > NOW() - interval '1 minute'",
+        schema
+    );
+    let row = db
+        .query_one(sql.as_str(), &[])
+        .await
+        .map_err(|err| format!("last minute count failed: {err}"))?;
+    let count: i64 = row.get("count");
+    Ok(count.max(0) as u64)
 }
 
 async fn fetch_demo_task(db: &mut Client) -> Result<Option<DemoTask>, String> {
