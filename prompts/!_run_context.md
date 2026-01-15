@@ -87,3 +87,14 @@ Key pillars:
 - Some DTO fields are unused placeholders (kept for forward compatibility).
 - Telemetry/identity are minimal stubs.
 
+
+---
+
+## Status snapshot (2026-01-15 19:03 MSK)
+- Portal: running via gateway on port 80; UI loads and uses SSE updates from scheduler.
+- Live data: scheduler `/v1/stream` and `/v1/summary` provide live counts; frontend consumes them.
+- Demo workflow: wordcount demo endpoints are wired; start/status/result work (with follow-up task enabled by default).
+- Agent: builds and runs; executes python tasks in sandbox and returns structured JSON results.
+- Validator: server sandbox recheck + aggregate endpoints available; AI heuristic flags enabled (can be disabled).
+- Compose: `docker compose up -d --build` completes successfully.
+
