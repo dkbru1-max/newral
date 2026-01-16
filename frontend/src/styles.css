@@ -409,6 +409,10 @@ h3 {
   color: var(--muted);
 }
 
+.vision-card {
+  margin-top: 12px;
+}
+
 .card-grid {
   margin-top: 24px;
   display: grid;
