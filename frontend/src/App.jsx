@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const baseKpis = [
   { label: "Connected Agents", trend: "live" },
   { label: "Tasks Completed", trend: "live" },
-  { label: "Avg Task Time", value: "4.2s", trend: "placeholder" },
-  { label: "Uptime", value: "99.94%", trend: "stable" },
-  { label: "AI Mode", trend: "policy gated" }
+  { label: "Queue Depth", trend: "live" },
+  { label: "AI Mode", trend: "policy gated" },
+  { label: "Storage Usage", value: "42%", trend: "object store" }
 ];
 
 const sections = [
@@ -13,9 +13,11 @@ const sections = [
   { id: "demo", title: "Demo" },
   { id: "agents", title: "Agents" },
   { id: "tasks", title: "Tasks" },
-  { id: "monitoring", title: "Monitoring" },
-  { id: "ai-mode", title: "AI Mode" },
   { id: "projects", title: "Projects" },
+  { id: "ai-mode", title: "AI Mode" },
+  { id: "log-center", title: "Log Center" },
+  { id: "settings", title: "Settings" },
+  { id: "integrations", title: "Integrations" },
   { id: "system-health", title: "System Health" }
 ];
 
@@ -32,9 +34,40 @@ const initialTasks = [
 ];
 
 const projects = [
-  { name: "Prime Search", status: "active", owner: "Research" },
-  { name: "LLM Fine-tuning", status: "staged", owner: "AI Lab" },
-  { name: "Bio Sim", status: "draft", owner: "BioTech" }
+  { name: "Prime Search", status: "active", owner: "Research", progress: 68 },
+  { name: "LLM Fine-tuning", status: "staged", owner: "AI Lab", progress: 22 },
+  { name: "Bio Sim", status: "draft", owner: "BioTech", progress: 9 }
+];
+
+const logSeed = [
+  {
+    id: "log-01",
+    level: "info",
+    source: "scheduler",
+    message: "Live summary broadcast to portal subscribers",
+    time: "2m ago"
+  },
+  {
+    id: "log-02",
+    level: "success",
+    source: "validator",
+    message: "Recheck completed, result verified",
+    time: "6m ago"
+  },
+  {
+    id: "log-03",
+    level: "warn",
+    source: "agent",
+    message: "Agent node-27 heartbeat delayed",
+    time: "10m ago"
+  },
+  {
+    id: "log-04",
+    level: "error",
+    source: "sandbox",
+    message: "Workspace size limit exceeded for task-8912",
+    time: "18m ago"
+  }
 ];
 
 const healthTargets = [
@@ -44,8 +77,16 @@ const healthTargets = [
   { id: "telemetry", name: "Telemetry Service", base: "/api/telemetry" }
 ];
 
+const integrationTargets = [
+  { name: "Kafka", status: "connected", note: "events + orchestration" },
+  { name: "Postgres", status: "connected", note: "task state + audit" },
+  { name: "MinIO", status: "connected", note: "object storage" },
+  { name: "Slack", status: "pending", note: "alerts" }
+];
+
 function App() {
   const [health, setHealth] = useState({});
+  const [healthLoaded, setHealthLoaded] = useState(false);
   const [liveAgents, setLiveAgents] = useState(initialAgents);
   const [liveTasks, setLiveTasks] = useState(initialTasks);
   const [liveQueue, setLiveQueue] = useState({
@@ -69,6 +110,51 @@ function App() {
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoError, setDemoError] = useState("");
   const [summaryError, setSummaryError] = useState("");
+  const [summaryLoaded, setSummaryLoaded] = useState(false);
+  const [taskQuery, setTaskQuery] = useState("");
+  const [taskStatus, setTaskStatus] = useState("all");
+  const [visibleTasks, setVisibleTasks] = useState(6);
+  const [visibleLogs, setVisibleLogs] = useState(6);
+  const [logFilters, setLogFilters] = useState({
+    info: true,
+    success: true,
+    warn: true,
+    error: true
+  });
+  const [settingsTab, setSettingsTab] = useState("general");
+  const [theme, setTheme] = useState("light");
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [createProjectState, setCreateProjectState] = useState("idle");
+
+  const manualTimerRef = useRef(null);
+  const flashTimerRef = useRef(null);
+  const createTimerRef = useRef({ loading: null, success: null });
+
+  const [activeSection, setActiveSection] = useState(sections[0]?.id ?? "");
+  const [manualActive, setManualActive] = useState("");
+  const [flashSection, setFlashSection] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const saved = window.localStorage.getItem("newral-theme");
+    if (saved) {
+      setTheme(saved);
+      return;
+    }
+    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    setTheme(prefersDark ? "dark" : "light");
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    document.documentElement.setAttribute("data-theme", theme);
+    window.localStorage.setItem("newral-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     let isMounted = true;
@@ -94,6 +180,7 @@ function App() {
       );
       if (isMounted) {
         setHealth(Object.fromEntries(results));
+        setHealthLoaded(true);
       }
     };
 
@@ -138,6 +225,7 @@ function App() {
       if (summary.ai_mode) {
         setLiveAiMode(summary.ai_mode);
       }
+      setSummaryLoaded(true);
     };
 
     const fetchSummary = async () => {
@@ -228,6 +316,26 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleScroll = () => {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      const docHeight =
+        document.documentElement.scrollHeight -
+        document.documentElement.clientHeight;
+      const progress = docHeight > 0 ? Math.min(1, scrollTop / docHeight) : 0;
+      setScrollProgress(progress);
+      setShowScrollTop(scrollTop > 240);
+    };
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
+    };
+  }, []);
+
   const handleStartDemo = async () => {
     setDemoLoading(true);
     setDemoError("");
@@ -246,41 +354,54 @@ function App() {
     }
   };
 
-  const connectedAgents = liveAgents.filter(
-    (agent) => agent.status === "online"
-  ).length;
-  const kpis = baseKpis.map((metric) => {
-    if (metric.label === "Connected Agents") {
-      return {
-        ...metric,
-        value: connectedAgents.toLocaleString()
-      };
+  const handleNavClick = (sectionId) => {
+    // Keep the clicked item active even if the scroll position barely moves.
+    setManualActive(sectionId);
+    setActiveSection(sectionId);
+    setFlashSection(sectionId);
+    if (manualTimerRef.current) {
+      clearTimeout(manualTimerRef.current);
     }
-    if (metric.label === "Tasks Completed") {
-      return {
-        ...metric,
-        value: liveQueue.completed.toLocaleString()
-      };
+    if (flashTimerRef.current) {
+      clearTimeout(flashTimerRef.current);
     }
-    if (metric.label === "AI Mode") {
-      return {
-        ...metric,
-        value: liveAiMode
-      };
-    }
-    return metric;
-  });
+    manualTimerRef.current = setTimeout(() => {
+      setManualActive("");
+    }, 2000);
+    flashTimerRef.current = setTimeout(() => {
+      setFlashSection("");
+    }, 1600);
+  };
 
-  const loadPercent = Math.min(
-    100,
-    Math.round(((liveLoad.running + liveLoad.queued) / 20) * 100)
-  );
+  const handleCreateProject = () => {
+    if (createProjectState === "loading") {
+      return;
+    }
+    setCreateProjectState("loading");
+    if (createTimerRef.current.loading) {
+      clearTimeout(createTimerRef.current.loading);
+    }
+    if (createTimerRef.current.success) {
+      clearTimeout(createTimerRef.current.success);
+    }
+    createTimerRef.current.loading = setTimeout(() => {
+      setCreateProjectState("success");
+    }, 900);
+    createTimerRef.current.success = setTimeout(() => {
+      setCreateProjectState("idle");
+    }, 2400);
+  };
 
-  const [activeSection, setActiveSection] = useState(sections[0]?.id ?? "");
-  const [manualActive, setManualActive] = useState("");
-  const [flashSection, setFlashSection] = useState("");
-  const manualTimerRef = useRef(null);
-  const flashTimerRef = useRef(null);
+  useEffect(() => {
+    return () => {
+      if (createTimerRef.current.loading) {
+        clearTimeout(createTimerRef.current.loading);
+      }
+      if (createTimerRef.current.success) {
+        clearTimeout(createTimerRef.current.success);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -316,34 +437,110 @@ function App() {
     };
   }, [manualActive]);
 
-  const handleNavClick = (sectionId) => {
-    // Keep the clicked item active even if the scroll position barely moves.
-    setManualActive(sectionId);
-    setActiveSection(sectionId);
-    setFlashSection(sectionId);
-    if (manualTimerRef.current) {
-      clearTimeout(manualTimerRef.current);
+  const connectedAgents = liveAgents.filter(
+    (agent) => agent.status === "online"
+  ).length;
+
+  const kpis = baseKpis.map((metric) => {
+    if (metric.label === "Connected Agents") {
+      return {
+        ...metric,
+        value: connectedAgents.toLocaleString()
+      };
     }
-    if (flashTimerRef.current) {
-      clearTimeout(flashTimerRef.current);
+    if (metric.label === "Tasks Completed") {
+      return {
+        ...metric,
+        value: liveQueue.completed.toLocaleString()
+      };
     }
-    manualTimerRef.current = setTimeout(() => {
-      setManualActive("");
-    }, 2000);
-    flashTimerRef.current = setTimeout(() => {
-      setFlashSection("");
-    }, 1600);
+    if (metric.label === "Queue Depth") {
+      return {
+        ...metric,
+        value: (liveQueue.queued + liveQueue.running).toLocaleString()
+      };
+    }
+    if (metric.label === "AI Mode") {
+      return {
+        ...metric,
+        value: liveAiMode
+      };
+    }
+    return metric;
+  });
+
+  const loadPercent = Math.min(
+    100,
+    Math.round(((liveLoad.running + liveLoad.queued) / 20) * 100)
+  );
+
+  const taskRows = useMemo(() => {
+    return liveTasks.map((task, index) => {
+      const shard = (index % 4) + 1;
+      return {
+        ...task,
+        project: projects[index % projects.length]?.name ?? "Demo",
+        agent: liveAgents[index % liveAgents.length]?.id ?? "auto",
+        progress: task.status === "done" ? 100 : task.status === "running" ? 62 : 18,
+        started: "2m ago",
+        completed: task.status === "done" ? "just now" : "-",
+        shard
+      };
+    });
+  }, [liveTasks, liveAgents]);
+
+  const filteredTasks = useMemo(() => {
+    const normalizedQuery = taskQuery.trim().toLowerCase();
+    return taskRows.filter((task) => {
+      const matchesQuery =
+        !normalizedQuery ||
+        task.id.toLowerCase().includes(normalizedQuery) ||
+        task.project.toLowerCase().includes(normalizedQuery);
+      const matchesStatus =
+        taskStatus === "all" ? true : task.status === taskStatus;
+      return matchesQuery && matchesStatus;
+    });
+  }, [taskQuery, taskRows, taskStatus]);
+
+  const visibleTaskRows = filteredTasks.slice(0, visibleTasks);
+
+  const filteredLogs = useMemo(() => {
+    return logSeed.filter((entry) => logFilters[entry.level]);
+  }, [logFilters]);
+
+  const visibleLogRows = filteredLogs.slice(0, visibleLogs);
+
+  const toggleLogFilter = (level) => {
+    setLogFilters((prev) => ({
+      ...prev,
+      [level]: !prev[level]
+    }));
+  };
+
+  const agentLoad = (id) => {
+    let hash = 0;
+    for (let i = 0; i < id.length; i += 1) {
+      hash = (hash * 31 + id.charCodeAt(i)) % 100;
+    }
+    return 20 + (hash % 70);
+  };
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  };
+
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          {/* Brand logo from public assets */}
           <img src="/newral_big_logo.png" alt="Newral" className="logo" />
           <div className="brand-copy">
             <p className="eyebrow">Newral Portal</p>
-            <h1>Demo View</h1>
+            <h1>Admin Console</h1>
           </div>
         </div>
         <nav className="nav-links">
@@ -367,7 +564,19 @@ function App() {
             <h2>Distributed compute, policy-first.</h2>
           </div>
           <div className="topbar-actions">
-            {/* Sign in will be enabled once auth is wired. */}
+            <button
+              className={`btn primary create-btn ${createProjectState}`}
+              onClick={handleCreateProject}
+            >
+              {createProjectState === "loading"
+                ? "Creating..."
+                : createProjectState === "success"
+                ? "Created"
+                : "Create project"}
+            </button>
+            <button className="btn ghost" onClick={toggleTheme}>
+              Theme: {theme === "dark" ? "Dark" : "Light"}
+            </button>
             <button className="btn" disabled>
               Sign in
             </button>
@@ -377,21 +586,37 @@ function App() {
         <main className="content">
           <section
             id="dashboard"
-            className={`section${flashSection === "dashboard" ? " flash" : ""}`}
+            className={`section${
+              flashSection === "dashboard" ? " flash" : ""
+            }`}
           >
             <div className="section-header">
-              <h2>Dashboard</h2>
-              <p>Snapshot of the MVP backbone and AI governance.</p>
+              <div>
+                <h2>Dashboard</h2>
+                <p>Snapshot of orchestration, trust, and throughput.</p>
+              </div>
+              <div className="pill">Auto-refresh on</div>
             </div>
             {summaryError && <p className="error">{summaryError}</p>}
             <div className="metric-grid">
-              {kpis.map((metric) => (
-                <div key={metric.label} className="metric-card">
-                  <span>{metric.label}</span>
-                  <strong>{metric.value}</strong>
-                  <em>{metric.trend}</em>
-                </div>
-              ))}
+              {summaryLoaded
+                ? kpis.map((metric) => (
+                    <div key={metric.label} className="metric-card">
+                      <span>{metric.label}</span>
+                      <strong>{metric.value}</strong>
+                      <em>{metric.trend}</em>
+                    </div>
+                  ))
+                : kpis.map((metric) => (
+                    <div
+                      key={metric.label}
+                      className="metric-card skeleton-card"
+                    >
+                      <span className="skeleton-line"></span>
+                      <strong className="skeleton-line"></strong>
+                      <em className="skeleton-line"></em>
+                    </div>
+                  ))}
             </div>
             <div className="chart-grid">
               <div className="chart-card">
@@ -408,13 +633,20 @@ function App() {
                 </div>
                 <div className="chart-surface alt" aria-hidden="true"></div>
               </div>
+              <div className="chart-card">
+                <div className="chart-header">
+                  <h3>Storage IO</h3>
+                  <span>MinIO</span>
+                </div>
+                <div className="chart-surface tertiary" aria-hidden="true"></div>
+              </div>
             </div>
             <div className="vision-card">
               <h3>Roadmap / Vision</h3>
               <ul>
                 <li>Security-first compute with continuous verification.</li>
-                <li>Scale to multi-region clusters with elastic orchestration.</li>
-                <li>AI-guided scheduling under deterministic policy control.</li>
+                <li>Multi-region orchestration with policy guardrails.</li>
+                <li>AI-guided scheduling with deterministic overrides.</li>
               </ul>
             </div>
           </section>
@@ -424,8 +656,11 @@ function App() {
             className={`section${flashSection === "demo" ? " flash" : ""}`}
           >
             <div className="section-header">
-              <h2>Demo Project</h2>
-              <p>Launch the wordcount demo and track its progress.</p>
+              <div>
+                <h2>Demo Project</h2>
+                <p>Launch the wordcount demo and track its progress.</p>
+              </div>
+              <div className="chip">Sandboxed Python</div>
             </div>
             <div className="demo-card">
               <div>
@@ -494,43 +729,92 @@ function App() {
 
           <section
             id="agents"
-            className={`section${flashSection === "agents" ? " flash" : ""}`}
+            className={`section${
+              flashSection === "agents" ? " flash" : ""
+            }`}
           >
             <div className="section-header">
-              <h2>Agents</h2>
-              <p>Live status for connected compute nodes.</p>
+              <div>
+                <h2>Agents</h2>
+                <p>Live status for connected compute nodes.</p>
+              </div>
+              <div className="chip">Auto heartbeat</div>
             </div>
-            <div className="table-card">
+            <div className="table-card table-scroll">
               <table>
                 <thead>
                   <tr>
                     <th>Node</th>
                     <th>Status</th>
                     <th>Region</th>
+                    <th>Load</th>
                     <th>Reputation</th>
+                    <th>Version</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {liveAgents.length === 0 ? (
+                  {summaryLoaded && liveAgents.length === 0 ? (
                     <tr>
-                      <td colSpan="4" className="muted">
+                      <td colSpan="6" className="muted">
                         No agents connected.
                       </td>
                     </tr>
-                  ) : (
+                  ) : summaryLoaded ? (
                     liveAgents.map((agent) => (
                       <tr key={agent.id}>
                         <td>{agent.id}</td>
-                        <td className={`status ${agent.status}`}>
-                          {agent.status}
+                        <td>
+                          <span
+                            className={`status-dot ${agent.status}`}
+                            title={agent.status}
+                          ></span>
+                          <span className={`status-label ${agent.status}`}>
+                            {agent.status}
+                          </span>
                         </td>
                         <td>{agent.region}</td>
+                        <td>
+                          <div className="mini-bar">
+                            <div
+                              style={{ width: `${agentLoad(agent.id)}%` }}
+                            ></div>
+                          </div>
+                        </td>
                         <td>{agent.reputation}</td>
+                        <td>v0.4.2</td>
+                      </tr>
+                    ))
+                  ) : (
+                    Array.from({ length: 4 }).map((_, index) => (
+                      <tr key={`agent-skel-${index}`}>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="card-grid">
+              <div className="stat-card">
+                <h3>Node Control</h3>
+                <p className="muted">
+                  Promote or pause agents during maintenance windows.
+                </p>
+                <div className="pill-row">
+                  <button className="btn ghost">Pause all</button>
+                  <button className="btn ghost">Resume all</button>
+                </div>
+              </div>
+              <div className="stat-card">
+                <h3>Health Alerts</h3>
+                <p className="muted">Last alert: heartbeat drift on node-27.</p>
+                <button className="btn ghost">Review alerts</button>
+              </div>
             </div>
           </section>
 
@@ -539,82 +823,158 @@ function App() {
             className={`section${flashSection === "tasks" ? " flash" : ""}`}
           >
             <div className="section-header">
-              <h2>Tasks</h2>
-              <p>Queue preview with priority tagging.</p>
+              <div>
+                <h2>Tasks</h2>
+                <p>Queue preview with filters and live status.</p>
+              </div>
+              <div className="filter-row">
+                <input
+                  className="input"
+                  placeholder="Search by task or project"
+                  value={taskQuery}
+                  onChange={(event) => setTaskQuery(event.target.value)}
+                />
+                <select
+                  className="input"
+                  value={taskStatus}
+                  onChange={(event) => setTaskStatus(event.target.value)}
+                >
+                  <option value="all">All</option>
+                  <option value="queued">Queued</option>
+                  <option value="running">Running</option>
+                  <option value="done">Done</option>
+                  <option value="waiting">Waiting</option>
+                </select>
+              </div>
             </div>
-            <div className="card-grid">
-              {liveTasks.length === 0 ? (
-                <div className="task-card">
-                  <strong>No tasks queued</strong>
-                  <em className="muted">Waiting for incoming work.</em>
-                </div>
-              ) : (
-                liveTasks.map((task) => (
-                  <div key={task.id} className="task-card">
-                    <span>{task.id}</span>
-                    <strong>{task.status}</strong>
-                    <em>{task.priority}</em>
-                  </div>
-                ))
-              )}
+            <div className="table-card table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>Project</th>
+                    <th>Agent</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Started</th>
+                    <th>Completed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryLoaded && visibleTaskRows.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" className="muted">
+                        No tasks matching the filter.
+                      </td>
+                    </tr>
+                  ) : summaryLoaded ? (
+                    visibleTaskRows.map((task) => (
+                      <tr key={task.id}>
+                        <td>{task.id}</td>
+                        <td>{task.project}</td>
+                        <td>{task.agent}</td>
+                        <td>
+                          <span className={`status-label ${task.status}`}>
+                            {task.status}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="mini-bar">
+                            <div style={{ width: `${task.progress}%` }}></div>
+                          </div>
+                        </td>
+                        <td>{task.started}</td>
+                        <td>{task.completed}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    Array.from({ length: 5 }).map((_, index) => (
+                      <tr key={`task-skel-${index}`}>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                        <td className="skeleton-line"></td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
+            {filteredTasks.length > visibleTaskRows.length && (
+              <button
+                className="btn ghost"
+                onClick={() => setVisibleTasks((prev) => prev + 6)}
+              >
+                Load more
+              </button>
+            )}
           </section>
 
           <section
-            id="monitoring"
-            className={`section${flashSection === "monitoring" ? " flash" : ""}`}
+            id="projects"
+            className={`section${
+              flashSection === "projects" ? " flash" : ""
+            }`}
           >
             <div className="section-header">
-              <h2>Monitoring</h2>
-              <p>Service readiness, latency bands, and stability signals.</p>
+              <div>
+                <h2>Projects</h2>
+                <p>Portfolio view for active and staged workloads.</p>
+              </div>
+              <button
+                className={`btn primary create-btn ${createProjectState}`}
+                onClick={handleCreateProject}
+              >
+                {createProjectState === "loading"
+                  ? "Creating..."
+                  : createProjectState === "success"
+                  ? "Created"
+                  : "Create project"}
+              </button>
             </div>
-            <div className="monitor-grid">
-              <div className="monitor-card">
-                <h3>Core services</h3>
-                <ul>
-                  <li>Identity: healthy</li>
-                  <li>Scheduler: healthy</li>
-                  <li>Validator: healthy</li>
-                  <li>Telemetry: healthy</li>
-                </ul>
-              </div>
-              <div className="monitor-card">
-                <h3>Metrics preview</h3>
-                <div className="bar-list">
-                  <div>
-                    <span>Task latency</span>
-                    <div className="bar">
-                      <div style={{ width: "62%" }}></div>
-                    </div>
-                  </div>
-                  <div>
-                    <span>Verification</span>
-                    <div className="bar">
-                      <div style={{ width: "48%" }}></div>
-                    </div>
-                  </div>
-                  <div>
-                    <span>Network load</span>
-                    <div className="bar">
-                      <div style={{ width: `${loadPercent}%` }}></div>
-                    </div>
-                  </div>
-                </div>
-                <p className="muted">
-                  Running: {liveLoad.running} · Queued: {liveLoad.queued} ·
-                  Throughput/min: {liveLoad.completed_last_min}
-                </p>
-              </div>
+            <div className="table-card">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Status</th>
+                    <th>Owner</th>
+                    <th>Progress</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {projects.map((project) => (
+                    <tr key={project.name}>
+                      <td>{project.name}</td>
+                      <td className="status-label">{project.status}</td>
+                      <td>{project.owner}</td>
+                      <td>
+                        <div className="mini-bar">
+                          <div style={{ width: `${project.progress}%` }}></div>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
 
           <section
             id="ai-mode"
-            className={`section${flashSection === "ai-mode" ? " flash" : ""}`}
+            className={`section${
+              flashSection === "ai-mode" ? " flash" : ""
+            }`}
           >
             <div className="section-header">
-              <h2>AI Mode</h2>
-              <p>Governance settings with policy enforcement.</p>
+              <div>
+                <h2>AI Mode</h2>
+                <p>Governance settings with policy enforcement.</p>
+              </div>
+              <div className="chip">Policy engine active</div>
             </div>
             <div className="card-grid">
               <div
@@ -653,32 +1013,185 @@ function App() {
           </section>
 
           <section
-            id="projects"
-            className={`section${flashSection === "projects" ? " flash" : ""}`}
+            id="log-center"
+            className={`section${
+              flashSection === "log-center" ? " flash" : ""
+            }`}
           >
             <div className="section-header">
-              <h2>Projects</h2>
-              <p>Portfolio view for active and staged workloads.</p>
+              <div>
+                <h2>Log Center</h2>
+                <p>Audit trail across agents, sandboxes, and services.</p>
+              </div>
+              <div className="pill-row">
+                <button
+                  className={`chip ${logFilters.info ? "active" : ""}`}
+                  onClick={() => toggleLogFilter("info")}
+                  aria-pressed={logFilters.info}
+                >
+                  Info
+                </button>
+                <button
+                  className={`chip ${logFilters.success ? "active" : ""}`}
+                  onClick={() => toggleLogFilter("success")}
+                  aria-pressed={logFilters.success}
+                >
+                  Success
+                </button>
+                <button
+                  className={`chip ${logFilters.warn ? "active" : ""}`}
+                  onClick={() => toggleLogFilter("warn")}
+                  aria-pressed={logFilters.warn}
+                >
+                  Warn
+                </button>
+                <button
+                  className={`chip ${logFilters.error ? "active" : ""}`}
+                  onClick={() => toggleLogFilter("error")}
+                  aria-pressed={logFilters.error}
+                >
+                  Error
+                </button>
+              </div>
             </div>
-            <div className="table-card">
+            <div className="table-card table-scroll">
               <table>
                 <thead>
                   <tr>
-                    <th>Project</th>
-                    <th>Status</th>
-                    <th>Owner</th>
+                    <th>Level</th>
+                    <th>Source</th>
+                    <th>Message</th>
+                    <th>Time</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {projects.map((project) => (
-                    <tr key={project.name}>
-                      <td>{project.name}</td>
-                      <td className="status">{project.status}</td>
-                      <td>{project.owner}</td>
+                  {visibleLogRows.map((entry) => (
+                    <tr key={entry.id} className={`log-row ${entry.level}`}>
+                      <td>
+                        <span className={`log-pill ${entry.level}`}>
+                          {entry.level}
+                        </span>
+                      </td>
+                      <td>{entry.source}</td>
+                      <td>{entry.message}</td>
+                      <td>{entry.time}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+            {filteredLogs.length > visibleLogRows.length && (
+              <button
+                className="btn ghost"
+                onClick={() => setVisibleLogs((prev) => prev + 6)}
+              >
+                Load more
+              </button>
+            )}
+          </section>
+
+          <section
+            id="settings"
+            className={`section${
+              flashSection === "settings" ? " flash" : ""
+            }`}
+          >
+            <div className="section-header">
+              <div>
+                <h2>Settings</h2>
+                <p>Organization profile, security, and access control.</p>
+              </div>
+              <div className="chip">Role-based access</div>
+            </div>
+            <div className="tab-row">
+              <button
+                className={`tab ${settingsTab === "general" ? "active" : ""}`}
+                onClick={() => setSettingsTab("general")}
+              >
+                General
+              </button>
+              <button
+                className={`tab ${settingsTab === "security" ? "active" : ""}`}
+                onClick={() => setSettingsTab("security")}
+              >
+                Security
+              </button>
+              <button
+                className={`tab ${settingsTab === "access" ? "active" : ""}`}
+                onClick={() => setSettingsTab("access")}
+              >
+                Access
+              </button>
+            </div>
+            <div className="card-grid">
+              {settingsTab === "general" && (
+                <>
+                  <div className="stat-card">
+                    <h3>Organization</h3>
+                    <p className="muted">Newral Labs, internal staging.</p>
+                    <button className="btn ghost">Edit profile</button>
+                  </div>
+                  <div className="stat-card">
+                    <h3>Resource Limits</h3>
+                    <p className="muted">Max concurrent tasks: 10</p>
+                    <button className="btn ghost">Adjust limits</button>
+                  </div>
+                </>
+              )}
+              {settingsTab === "security" && (
+                <>
+                  <div className="stat-card">
+                    <h3>API Keys</h3>
+                    <p className="muted">Rotate service keys every 30 days.</p>
+                    <button className="btn ghost">Manage keys</button>
+                  </div>
+                  <div className="stat-card">
+                    <h3>Certificates</h3>
+                    <p className="muted">TLS required for external agents.</p>
+                    <button className="btn ghost">Upload certs</button>
+                  </div>
+                </>
+              )}
+              {settingsTab === "access" && (
+                <>
+                  <div className="stat-card">
+                    <h3>Users</h3>
+                    <p className="muted">14 active users, 3 admins.</p>
+                    <button className="btn ghost">Invite user</button>
+                  </div>
+                  <div className="stat-card">
+                    <h3>Roles</h3>
+                    <p className="muted">Admin, Operator, Observer.</p>
+                    <button className="btn ghost">Edit roles</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+
+          <section
+            id="integrations"
+            className={`section${
+              flashSection === "integrations" ? " flash" : ""
+            }`}
+          >
+            <div className="section-header">
+              <div>
+                <h2>Integrations</h2>
+                <p>Infrastructure backbone and outbound alerts.</p>
+              </div>
+              <div className="chip">Docker compose stack</div>
+            </div>
+            <div className="card-grid">
+              {integrationTargets.map((integration) => (
+                <div key={integration.name} className="stat-card">
+                  <h3>{integration.name}</h3>
+                  <p className="muted">{integration.note}</p>
+                  <span className={`pill ${integration.status}`}>
+                    {integration.status}
+                  </span>
+                </div>
+              ))}
             </div>
           </section>
 
@@ -689,8 +1202,11 @@ function App() {
             }`}
           >
             <div className="section-header">
-              <h2>System Health</h2>
-              <p>Live readiness checks proxied through the gateway.</p>
+              <div>
+                <h2>System Health</h2>
+                <p>Live readiness checks proxied through the gateway.</p>
+              </div>
+              <div className="chip">SSE enabled</div>
             </div>
             <div className="health-grid">
               {healthTargets.map((service) => {
@@ -701,13 +1217,50 @@ function App() {
                       <h3>{service.name}</h3>
                       <p className="muted">{service.base}</p>
                     </div>
-                    <span className={`pill ${status}`}>{status}</span>
+                    <span
+                      className={`pill ${
+                        healthLoaded ? status : "loading"
+                      }`}
+                    >
+                      {healthLoaded ? status : "loading"}
+                    </span>
                   </div>
                 );
               })}
+              <div className="health-card">
+                <div>
+                  <h3>Object Storage</h3>
+                  <p className="muted">MinIO /data</p>
+                </div>
+                <span className="pill ok">ok</span>
+              </div>
             </div>
           </section>
         </main>
+      </div>
+
+      <div className="floating-actions">
+        <button
+          className={`scroll-top ${showScrollTop ? "show" : ""}`}
+          onClick={scrollToTop}
+          aria-label="Scroll to top"
+        >
+          <svg viewBox="0 0 48 48" className="progress-ring">
+            <circle className="ring-bg" cx="24" cy="24" r="20" />
+            <circle
+              className="ring"
+              cx="24"
+              cy="24"
+              r="20"
+              style={{
+                strokeDashoffset: `${
+                  125.6 - 125.6 * scrollProgress
+                }px`
+              }}
+            />
+          </svg>
+          <span>Top</span>
+        </button>
       </div>
     </div>
   );
