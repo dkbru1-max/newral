@@ -7,9 +7,9 @@ use axum::{
 use std::{convert::Infallible, time::Duration};
 
 use crate::models::{
-    AgentMetricsRequest, AgentPreferencesRequest, AgentRegisterRequest, CreateProjectRequest,
-    BpswStartRequest, DemoStartParams, HeartbeatRequest, TaskBatchRequest, TaskRequest,
-    TaskSubmitRequest,
+    AgentMetricsRequest, AgentPreferencesRequest, AgentRegisterRequest, BpswStartRequest,
+    CreateProjectRequest, DemoStartParams, HeartbeatRequest, PortalLogRequest, TaskBatchRequest,
+    TaskRequest, TaskSubmitRequest,
 };
 use crate::service;
 use crate::state::AppState;
@@ -143,6 +143,13 @@ pub async fn list_projects(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+pub async fn list_agents(State(state): State<AppState>) -> impl IntoResponse {
+    match service::list_agents(&state).await {
+        Ok(agents) => (StatusCode::OK, Json(agents)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
 pub async fn create_project(
     State(state): State<AppState>,
     Json(payload): Json<CreateProjectRequest>,
@@ -159,6 +166,36 @@ pub async fn delete_project(
 ) -> impl IntoResponse {
     match service::delete_project(&state, project_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn start_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<i64>,
+) -> impl IntoResponse {
+    match service::start_project(&state, project_id).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn pause_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<i64>,
+) -> impl IntoResponse {
+    match service::pause_project(&state, project_id).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn stop_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<i64>,
+) -> impl IntoResponse {
+    match service::stop_project(&state, project_id).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => (err.status, Json(err.body)).into_response(),
     }
 }
@@ -188,6 +225,22 @@ pub async fn sync_bpsw_scripts(State(state): State<AppState>) -> impl IntoRespon
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => (err.status, Json(err.body)).into_response(),
     }
+}
+
+pub async fn portal_log(
+    Json(payload): Json<PortalLogRequest>,
+) -> impl IntoResponse {
+    let level = payload
+        .level
+        .unwrap_or_else(|| "info".to_string())
+        .to_lowercase();
+    match level.as_str() {
+        "error" => tracing::error!(context = ?payload.context, "portal: {}", payload.message),
+        "warn" | "warning" => tracing::warn!(context = ?payload.context, "portal: {}", payload.message),
+        "debug" => tracing::debug!(context = ?payload.context, "portal: {}", payload.message),
+        _ => tracing::info!(context = ?payload.context, "portal: {}", payload.message),
+    }
+    StatusCode::NO_CONTENT
 }
 
 pub async fn status_demo_wordcount(State(state): State<AppState>) -> impl IntoResponse {

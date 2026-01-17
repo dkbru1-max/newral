@@ -13,7 +13,7 @@ pub struct TaskRequest {
 
 #[derive(Serialize)]
 pub struct TaskResponse {
-    pub status: &'static str,
+    pub status: String,
     pub task_id: String,
     pub policy_decision: &'static str,
     pub granted_tasks: u32,
@@ -26,7 +26,8 @@ pub struct TaskResponse {
 
 #[derive(Deserialize)]
 pub struct TaskBatchRequest {
-    pub agent_uid: String,
+    pub agent_uid: Option<String>,
+    pub node_id: Option<String>,
     pub requested_tasks: Option<u32>,
     pub proposal_source: Option<String>,
     pub project_id: Option<i64>,
@@ -35,7 +36,7 @@ pub struct TaskBatchRequest {
 
 #[derive(Serialize)]
 pub struct TaskBatchResponse {
-    pub status: &'static str,
+    pub status: String,
     pub policy_decision: &'static str,
     pub granted_tasks: u32,
     pub reasons: Vec<String>,
@@ -74,6 +75,50 @@ pub struct LiveSummary {
     pub queue: TaskQueueSummary,
     pub load: LoadSummary,
     pub version: String,
+    pub dashboard: DashboardSnapshot,
+}
+
+#[derive(Default, Serialize)]
+pub struct DashboardSnapshot {
+    pub tasks_last_24h: Vec<DashboardPoint>,
+    pub tasks_total_24h: u64,
+    pub agent_availability: AgentAvailabilitySnapshot,
+    pub storage_io: StorageIoSnapshot,
+    pub throughput: ThroughputSnapshot,
+    pub trust: TrustSnapshot,
+}
+
+#[derive(Serialize)]
+pub struct DashboardPoint {
+    pub label: String,
+    pub value: u64,
+}
+
+#[derive(Default, Serialize)]
+pub struct AgentAvailabilitySnapshot {
+    pub online: u64,
+    pub idle: u64,
+    pub blocked: u64,
+}
+
+#[derive(Default, Serialize)]
+pub struct StorageIoSnapshot {
+    pub disk_read_mb: f64,
+    pub disk_write_mb: f64,
+    pub net_rx_mb: f64,
+    pub net_tx_mb: f64,
+}
+
+#[derive(Default, Serialize)]
+pub struct ThroughputSnapshot {
+    pub completed_last_min: u64,
+    pub completed_last_hour: u64,
+}
+
+#[derive(Default, Serialize)]
+pub struct TrustSnapshot {
+    pub blocked_agents: u64,
+    pub total_agents: u64,
 }
 
 #[derive(Serialize)]
@@ -83,6 +128,18 @@ pub struct AgentSummary {
     pub last_seen_secs: u64,
     pub region: String,
     pub reputation: String,
+}
+
+#[derive(Serialize)]
+pub struct AgentInfo {
+    pub agent_uid: String,
+    pub display_name: Option<String>,
+    pub status: String,
+    pub last_seen: Option<String>,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+    pub hardware: Option<serde_json::Value>,
+    pub metrics: Option<AgentMetrics>,
 }
 
 #[derive(Serialize)]
@@ -146,6 +203,13 @@ pub struct AgentMetricsRequest {
     pub metrics: AgentMetrics,
 }
 
+#[derive(Deserialize)]
+pub struct PortalLogRequest {
+    pub level: Option<String>,
+    pub message: String,
+    pub context: Option<serde_json::Value>,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct AgentMetrics {
     pub cpu_load: Option<f32>,
@@ -184,6 +248,7 @@ pub struct Project {
     pub name: String,
     pub description: Option<String>,
     pub owner_id: Option<i64>,
+    pub status: String,
     pub is_demo: bool,
     pub storage_prefix: String,
     pub created_at: String,
@@ -203,6 +268,7 @@ pub struct ProjectResponse {
     pub name: String,
     pub description: Option<String>,
     pub owner_id: Option<i64>,
+    pub status: String,
     pub is_demo: bool,
     pub storage_prefix: String,
     pub created_at: String,
@@ -212,6 +278,13 @@ pub struct ProjectResponse {
 pub struct CreateProjectResponse {
     pub status: &'static str,
     pub project: ProjectResponse,
+}
+
+#[derive(Serialize)]
+pub struct ProjectControlResponse {
+    pub status: &'static str,
+    pub project: ProjectResponse,
+    pub affected_tasks: Option<u64>,
 }
 
 #[derive(Deserialize)]

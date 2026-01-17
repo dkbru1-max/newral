@@ -12,7 +12,9 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u 10001 app
+    && useradd -m -u 10001 app \
+    && mkdir -p /app/logs \
+    && chown -R app:app /app/logs
 WORKDIR /app
 COPY --from=builder /app/validator-service/target/release/validator-service /app/validator-service
 EXPOSE 8080

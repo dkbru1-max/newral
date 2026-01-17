@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BrowserRouter,
   Link,
@@ -17,6 +17,15 @@ const baseKpis = [
   { label: "Storage Usage", value: "42%", trend: "object store" }
 ];
 
+const emptyDashboardSnapshot = {
+  tasks_last_24h: [],
+  tasks_total_24h: 0,
+  agent_availability: { online: 0, idle: 0, blocked: 0 },
+  storage_io: { disk_read_mb: 0, disk_write_mb: 0, net_rx_mb: 0, net_tx_mb: 0 },
+  throughput: { completed_last_min: 0, completed_last_hour: 0 },
+  trust: { blocked_agents: 0, total_agents: 0 }
+};
+
 const navItems = [
   { id: "dashboard", title: "Dashboard", anchor: "dashboard" },
   { id: "demo", title: "Demo", anchor: "demo" },
@@ -30,11 +39,7 @@ const navItems = [
   { id: "system-health", title: "System Health", anchor: "system-health" }
 ];
 
-const initialAgents = [
-  { id: "node-01", status: "online", region: "EU-West", reputation: "0.8" },
-  { id: "node-14", status: "online", region: "NA-East", reputation: "0.9" },
-  { id: "node-27", status: "idle", region: "AP-South", reputation: "0.7" }
-];
+const initialAgents = [];
 
 const initialTasks = [
   { id: "task-1001", status: "queued", priority: "high" },
@@ -43,9 +48,9 @@ const initialTasks = [
 ];
 
 const seedProjects = [
-  { name: "Prime Search", status: "active", owner: "Research", progress: 68 },
-  { name: "LLM Fine-tuning", status: "staged", owner: "AI Lab", progress: 22 },
-  { name: "Bio Sim", status: "draft", owner: "BioTech", progress: 9 }
+  { id: null, name: "Prime Search", status: "active", owner: "Research", progress: 68 },
+  { id: null, name: "LLM Fine-tuning", status: "staged", owner: "AI Lab", progress: 22 },
+  { id: null, name: "Bio Sim", status: "draft", owner: "BioTech", progress: 9 }
 ];
 
 const logSeed = [
@@ -101,6 +106,23 @@ const bpswTaskTypes = [
   "pomerance_modular",
   "lambda_plus_one"
 ];
+
+async function readApiError(response) {
+  try {
+    const text = await response.text();
+    if (!text) {
+      return "";
+    }
+    try {
+      const json = JSON.parse(text);
+      return json?.message || json?.error || "";
+    } catch (error) {
+      return text;
+    }
+  } catch (error) {
+    return "";
+  }
+}
 
 const projectPath = (name) => `/projects/${encodeURIComponent(name)}`;
 
@@ -216,7 +238,33 @@ function Layout({
   );
 }
 
-function DashboardPage({ kpis, summaryError, summaryLoaded, liveLoad, sectionId }) {
+function DashboardPage({
+  kpis,
+  summaryError,
+  summaryLoaded,
+  liveLoad,
+  dashboard,
+  sectionId
+}) {
+  const taskBuckets = dashboard?.tasks_last_24h ?? [];
+  const resolvedBuckets =
+    taskBuckets.length > 0
+      ? taskBuckets
+      : Array.from({ length: 7 }, (_, idx) => ({
+          label: `-${24 - idx * 4}h`,
+          value: 0
+        }));
+  const maxBucket = Math.max(1, ...resolvedBuckets.map((bucket) => bucket.value));
+  const availability = dashboard?.agent_availability ?? emptyDashboardSnapshot.agent_availability;
+  const totalAgents = availability.online + availability.idle + availability.blocked;
+  const storage = dashboard?.storage_io ?? emptyDashboardSnapshot.storage_io;
+  const storageTotal = Math.max(
+    1,
+    storage.disk_read_mb + storage.disk_write_mb + storage.net_rx_mb + storage.net_tx_mb
+  );
+  const trust = dashboard?.trust ?? emptyDashboardSnapshot.trust;
+  const throughput =
+    dashboard?.throughput ?? emptyDashboardSnapshot.throughput;
   return (
     <section className="section" id={sectionId}>
       <div className="section-header">
@@ -248,23 +296,130 @@ function DashboardPage({ kpis, summaryError, summaryLoaded, liveLoad, sectionId 
         <div className="chart-card">
           <div className="chart-header">
             <h3>Tasks (last 24h)</h3>
-            <span>placeholder</span>
+            <span>{dashboard?.tasks_total_24h ?? 0} completed</span>
           </div>
-          <div className="chart-surface" aria-hidden="true"></div>
+          <div className="chart-bars">
+            {resolvedBuckets.map((bucket) => (
+              <div key={bucket.label} className="chart-bar">
+                <div
+                  className="chart-bar-fill"
+                  style={{ height: `${(bucket.value / maxBucket) * 100}%` }}
+                ></div>
+                <span>{bucket.label}</span>
+              </div>
+            ))}
+          </div>
         </div>
         <div className="chart-card">
           <div className="chart-header">
             <h3>Agent availability</h3>
-            <span>placeholder</span>
+            <span>{totalAgents} total</span>
           </div>
-          <div className="chart-surface alt" aria-hidden="true"></div>
+          <div className="chart-meter">
+            <div
+              className="chart-meter-bar online"
+              style={{
+                width: `${totalAgents ? (availability.online / totalAgents) * 100 : 0}%`
+              }}
+            ></div>
+            <div
+              className="chart-meter-bar idle"
+              style={{
+                width: `${totalAgents ? (availability.idle / totalAgents) * 100 : 0}%`
+              }}
+            ></div>
+            <div
+              className="chart-meter-bar blocked"
+              style={{
+                width: `${totalAgents ? (availability.blocked / totalAgents) * 100 : 0}%`
+              }}
+            ></div>
+          </div>
+          <div className="chart-legend">
+            <span>Online: {availability.online}</span>
+            <span>Idle: {availability.idle}</span>
+            <span>Blocked: {availability.blocked}</span>
+          </div>
         </div>
         <div className="chart-card">
           <div className="chart-header">
             <h3>Storage IO</h3>
-            <span>MinIO</span>
+            <span>MB totals</span>
           </div>
-          <div className="chart-surface tertiary" aria-hidden="true"></div>
+          <div className="chart-stack">
+            <div>
+              <span>Disk read</span>
+              <div className="chart-meter">
+                <div
+                  className="chart-meter-bar primary"
+                  style={{ width: `${(storage.disk_read_mb / storageTotal) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+            <div>
+              <span>Disk write</span>
+              <div className="chart-meter">
+                <div
+                  className="chart-meter-bar accent"
+                  style={{ width: `${(storage.disk_write_mb / storageTotal) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+            <div>
+              <span>Net RX</span>
+              <div className="chart-meter">
+                <div
+                  className="chart-meter-bar neutral"
+                  style={{ width: `${(storage.net_rx_mb / storageTotal) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+            <div>
+              <span>Net TX</span>
+              <div className="chart-meter">
+                <div
+                  className="chart-meter-bar neutral"
+                  style={{ width: `${(storage.net_tx_mb / storageTotal) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+          </div>
+          <div className="chart-legend">
+            <span>{storage.disk_read_mb.toFixed(1)} MB read</span>
+            <span>{storage.disk_write_mb.toFixed(1)} MB write</span>
+          </div>
+        </div>
+        <div className="chart-card">
+          <div className="chart-header">
+            <h3>Throughput</h3>
+            <span>live</span>
+          </div>
+          <div className="chart-stat">
+            <div>
+              <strong>{throughput.completed_last_min}</strong>
+              <span>completed / min</span>
+            </div>
+            <div>
+              <strong>{throughput.completed_last_hour}</strong>
+              <span>completed / hour</span>
+            </div>
+          </div>
+        </div>
+        <div className="chart-card">
+          <div className="chart-header">
+            <h3>Trust</h3>
+            <span>policy</span>
+          </div>
+          <div className="chart-stat">
+            <div>
+              <strong>{trust.blocked_agents}</strong>
+              <span>blocked agents</span>
+            </div>
+            <div>
+              <strong>{trust.total_agents}</strong>
+              <span>total agents</span>
+            </div>
+          </div>
         </div>
       </div>
       <div className="vision-card">
@@ -382,13 +537,13 @@ function DemoPage({
   );
 }
 
-function AgentsPage({ liveAgents, summaryLoaded, sectionId }) {
+function AgentsPage({ agents, summaryLoaded, sectionId }) {
   return (
     <section className="section" id={sectionId}>
       <div className="section-header">
         <div>
           <h2>Agents</h2>
-          <p>Live status for connected compute nodes.</p>
+          <p>Live status and hardware inventory for connected nodes.</p>
         </div>
         <div className="chip">Auto heartbeat</div>
       </div>
@@ -398,33 +553,39 @@ function AgentsPage({ liveAgents, summaryLoaded, sectionId }) {
             <tr>
               <th>Node</th>
               <th>Status</th>
-              <th>Region</th>
-              <th>Reputation</th>
+              <th>CPU</th>
+              <th>RAM</th>
+              <th>GPU</th>
               <th>Details</th>
             </tr>
           </thead>
           <tbody>
-            {summaryLoaded && liveAgents.length === 0 ? (
+            {summaryLoaded && agents.length === 0 ? (
               <tr>
-                <td colSpan="5" className="muted">
+                <td colSpan="6" className="muted">
                   No agents connected.
                 </td>
               </tr>
             ) : (
-              liveAgents.map((agent) => (
+              agents.map((agent) => (
                 <tr key={agent.id}>
                   <td>{agent.id}</td>
                   <td>
                     <span className={`status-dot ${agent.status}`} title={agent.status}></span>
                     <span className={`status-label ${agent.status}`}>{agent.status}</span>
                   </td>
-                  <td>{agent.region}</td>
-                  <td>{agent.reputation}</td>
+                  <td>{agent.hardware?.cpu_model ?? "—"}</td>
                   <td>
-                  <Link to={`/agents/${agent.id}`} className="link">View</Link>
-                </td>
-              </tr>
-            ))
+                    {agent.hardware?.ram_total_mb
+                      ? `${Math.round(agent.hardware.ram_total_mb)} MB`
+                      : "—"}
+                  </td>
+                  <td>{agent.hardware?.gpu_model ?? "—"}</td>
+                  <td>
+                    <Link to={`/agents/${agent.id}`} className="link">View</Link>
+                  </td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>
@@ -433,9 +594,9 @@ function AgentsPage({ liveAgents, summaryLoaded, sectionId }) {
   );
 }
 
-function AgentDetailPage({ liveAgents }) {
+function AgentDetailPage({ agents }) {
   const { agentId } = useParams();
-  const agent = liveAgents.find((entry) => entry.id === agentId);
+  const agent = agents.find((entry) => entry.id === agentId);
   if (!agent) {
     return <p className="error">Agent not found.</p>;
   }
@@ -454,23 +615,37 @@ function AgentDetailPage({ liveAgents }) {
           <p className="muted">{agent.status}</p>
         </div>
         <div className="stat-card">
-          <h3>Region</h3>
-          <p className="muted">{agent.region}</p>
+          <h3>Last seen</h3>
+          <p className="muted">{agent.last_seen ?? "unknown"}</p>
         </div>
         <div className="stat-card">
-          <h3>Reputation</h3>
-          <p className="muted">{agent.reputation}</p>
+          <h3>Blocked</h3>
+          <p className="muted">{agent.blocked ? "yes" : "no"}</p>
         </div>
       </div>
       <div className="card-grid">
         <div className="stat-card">
           <h3>Hardware</h3>
-          <p className="muted">CPU: Intel Xeon · RAM: 64GB</p>
-          <p className="muted">GPU: None · Disk: 1.2TB SSD</p>
+          <p className="muted">
+            CPU: {agent.hardware?.cpu_model ?? "—"} · RAM:{" "}
+            {agent.hardware?.ram_total_mb
+              ? `${Math.round(agent.hardware.ram_total_mb)} MB`
+              : "—"}
+          </p>
+          <p className="muted">
+            GPU: {agent.hardware?.gpu_model ?? "—"} · Disk:{" "}
+            {agent.hardware?.disk_total_mb
+              ? `${Math.round(agent.hardware.disk_total_mb)} MB`
+              : "—"}
+          </p>
         </div>
         <div className="stat-card">
           <h3>Recent metrics</h3>
-          <p className="muted">CPU 42% · RAM 63% · Net 120KB/s</p>
+          <p className="muted">
+            CPU {agent.metrics?.cpu_load?.toFixed(1) ?? "—"}% · RAM{" "}
+            {agent.metrics?.ram_used_mb?.toFixed(0) ?? "—"} MB · Net{" "}
+            {agent.metrics?.net_rx_bytes ?? "—"} B
+          </p>
         </div>
       </div>
       <div className="card-grid">
@@ -632,11 +807,18 @@ function ProjectsPage({
   onUpdateBpswForm,
   onToggleBpswType,
   onStartBpsw,
+  onProjectAction,
   onSyncBpsw,
   bpswState,
+  projectActions,
   sectionId,
   projects
 }) {
+  const bpswProject = projects.find((project) => project.name === "bpsw_hunter");
+  const bpswStatus = bpswProject?.status ?? "inactive";
+  const bpswActionState = bpswProject?.id ? projectActions[bpswProject.id] ?? {} : {};
+  const bpswIsActive = bpswStatus === "active";
+  const bpswActionLoading = Boolean(bpswActionState.loading);
   return (
     <section className="section" id={sectionId}>
       <div className="section-header">
@@ -652,6 +834,10 @@ function ProjectsPage({
         <div className="stat-card">
           <h3>BPSW Hunter</h3>
           <p className="muted">Launch distributed search tasks from the portal.</p>
+          <div className="pill-row">
+            <span className="pill">{bpswStatus}</span>
+            {bpswActionState.info && <span className="pill">{bpswActionState.info}</span>}
+          </div>
           <div className="form-grid">
             <label className="field">
               <span>Start (optional)</span>
@@ -702,20 +888,28 @@ function ProjectsPage({
           {bpswState.success && (
             <p className="muted">Started tasks: {bpswState.success}</p>
           )}
+          {bpswActionState.error && <p className="error">{bpswActionState.error}</p>}
           <div className="form-actions">
             <button
               className="btn ghost"
               onClick={onSyncBpsw}
-              disabled={bpswState.syncing}
+              disabled={bpswState.syncing || bpswActionLoading}
             >
               {bpswState.syncing ? "Syncing..." : "Sync scripts"}
             </button>
             <button
               className="btn primary"
               onClick={onStartBpsw}
-              disabled={bpswState.loading}
+              disabled={bpswState.loading || bpswActionLoading}
             >
-              {bpswState.loading ? "Starting..." : "Start BPSW"}
+              {bpswState.loading ? "Starting..." : bpswIsActive ? "Stop" : "Start"}
+            </button>
+            <button
+              className="btn ghost"
+              onClick={() => bpswProject && onProjectAction(bpswProject, "pause")}
+              disabled={!bpswProject || bpswStatus === "stopped" || bpswActionLoading}
+            >
+              Pause
             </button>
           </div>
         </div>
@@ -724,16 +918,24 @@ function ProjectsPage({
         <table>
           <thead>
             <tr>
+              <th>ID</th>
               <th>Project</th>
               <th>Status</th>
               <th>Owner</th>
               <th>Progress</th>
+              <th>Actions</th>
               <th>Details</th>
             </tr>
           </thead>
           <tbody>
-            {projects.map((project) => (
+            {projects.map((project) => {
+              const actionState = project.id ? projectActions[project.id] ?? {} : {};
+              const isActive = project.status === "active";
+              const actionLabel = isActive ? "Stop" : "Start";
+              const action = isActive ? "stop" : "start";
+              return (
               <tr key={project.name}>
+                <td className="mono">{project.id ?? "—"}</td>
                 <td>{project.name}</td>
                 <td className="status-label">{project.status}</td>
                 <td>{project.owner}</td>
@@ -743,10 +945,29 @@ function ProjectsPage({
                   </div>
                 </td>
                 <td>
+                  <div className="pill-row">
+                    <button
+                      className="btn ghost"
+                      onClick={() => onProjectAction(project, action)}
+                      disabled={!project.id || actionState.loading}
+                    >
+                      {actionLabel}
+                    </button>
+                    <button
+                      className="btn ghost"
+                      onClick={() => onProjectAction(project, "pause")}
+                      disabled={!project.id || project.status === "stopped" || actionState.loading}
+                    >
+                      Pause
+                    </button>
+                  </div>
+                </td>
+                <td>
                   <Link to={projectPath(project.name)} className="link">View</Link>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -754,13 +975,17 @@ function ProjectsPage({
   );
 }
 
-function ProjectDetailPage({ projects }) {
+function ProjectDetailPage({ projects, onProjectAction, projectActions }) {
   const { projectName } = useParams();
   const decodedName = decodeURIComponent(projectName ?? "");
   const project = projects.find((entry) => entry.name === decodedName);
   if (!project) {
     return <p className="error">Project not found.</p>;
   }
+  const actionState = project.id ? projectActions[project.id] ?? {} : {};
+  const isActive = project.status === "active";
+  const actionLabel = isActive ? "Stop" : "Start";
+  const action = isActive ? "stop" : "start";
   return (
     <section className="section">
       <div className="section-header">
@@ -771,6 +996,10 @@ function ProjectDetailPage({ projects }) {
         <div className="chip">{project.status}</div>
       </div>
       <div className="card-grid">
+        <div className="stat-card">
+          <h3>Project ID</h3>
+          <p className="muted mono">{project.id ?? "—"}</p>
+        </div>
         <div className="stat-card">
           <h3>Owner</h3>
           <p className="muted">{project.owner}</p>
@@ -788,9 +1017,23 @@ function ProjectDetailPage({ projects }) {
         <div className="stat-card">
           <h3>Actions</h3>
           <div className="pill-row">
-            <button className="btn ghost">Pause project</button>
-            <button className="btn ghost">Edit</button>
+            <button
+              className="btn ghost"
+              onClick={() => onProjectAction(project, action)}
+              disabled={!project.id || actionState.loading}
+            >
+              {actionLabel}
+            </button>
+            <button
+              className="btn ghost"
+              onClick={() => onProjectAction(project, "pause")}
+              disabled={!project.id || project.status === "stopped" || actionState.loading}
+            >
+              Pause
+            </button>
           </div>
+          {actionState.error && <p className="error">{actionState.error}</p>}
+          {actionState.info && <p className="muted">{actionState.info}</p>}
         </div>
       </div>
     </section>
@@ -1025,6 +1268,7 @@ function PortalApp() {
   const [health, setHealth] = useState({});
   const [healthLoaded, setHealthLoaded] = useState(false);
   const [liveAgents, setLiveAgents] = useState(initialAgents);
+  const [agentsData, setAgentsData] = useState(initialAgents);
   const [liveTasks, setLiveTasks] = useState(initialTasks);
   const [liveQueue, setLiveQueue] = useState({
     queued: 0,
@@ -1065,6 +1309,9 @@ function PortalApp() {
   const [portalVersion, setPortalVersion] = useState("");
   const [summaryErrorCount, setSummaryErrorCount] = useState(0);
   const [activeSection, setActiveSection] = useState("dashboard");
+  const [dashboardSnapshot, setDashboardSnapshot] = useState(
+    emptyDashboardSnapshot
+  );
   const [bpswForm, setBpswForm] = useState(() => ({
     start: "",
     end: "",
@@ -1080,6 +1327,7 @@ function PortalApp() {
     error: "",
     success: ""
   });
+  const [projectActions, setProjectActions] = useState({});
 
   useEffect(() => {
     const saved = window.localStorage.getItem("newral-theme");
@@ -1089,6 +1337,18 @@ function PortalApp() {
     }
     const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
     setTheme(prefersDark ? "dark" : "light");
+  }, []);
+
+  const logPortalEvent = useCallback(async (level, message, context = {}) => {
+    try {
+      await fetch("/api/scheduler/v1/portal/logs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level, message, context })
+      });
+    } catch (error) {
+      // Avoid cascading failures on logging.
+    }
   }, []);
 
   useEffect(() => {
@@ -1188,6 +1448,40 @@ function PortalApp() {
 
   useEffect(() => {
     let isMounted = true;
+    const fetchAgents = async () => {
+      try {
+        const response = await fetch("/api/scheduler/v1/agents");
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (!Array.isArray(data) || !isMounted) {
+          return;
+        }
+        const mapped = data.map((agent) => ({
+          id: agent.agent_uid,
+          status: agent.status ?? "idle",
+          last_seen: agent.last_seen ?? null,
+          blocked: agent.blocked ?? false,
+          blocked_reason: agent.blocked_reason ?? null,
+          hardware: agent.hardware ?? null,
+          metrics: agent.metrics ?? null
+        }));
+        setAgentsData(mapped);
+      } catch (error) {
+        // Keep silent to avoid breaking UI.
+      }
+    };
+    fetchAgents();
+    const interval = setInterval(fetchAgents, 10000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
     const fetchProjects = async () => {
       try {
         const response = await fetch("/api/scheduler/v1/projects");
@@ -1199,10 +1493,12 @@ function PortalApp() {
           return;
         }
         const mapped = data.map((project) => ({
+          id: project.id ?? null,
           name: project.name,
-          status: project.is_demo ? "demo" : "active",
+          status: project.status ?? (project.is_demo ? "demo" : "active"),
           owner: project.owner_id ?? "core",
-          progress: project.is_demo ? 100 : 0
+          progress: project.is_demo ? 100 : 0,
+          is_demo: project.is_demo ?? false
         }));
         if (mapped.length > 0) {
           setProjectsData(mapped);
@@ -1248,6 +1544,28 @@ function PortalApp() {
           completed_last_min: summary.load.completed_last_min ?? 0
         });
       }
+      if (summary.dashboard) {
+        setDashboardSnapshot({
+          ...emptyDashboardSnapshot,
+          ...summary.dashboard,
+          agent_availability: {
+            ...emptyDashboardSnapshot.agent_availability,
+            ...(summary.dashboard.agent_availability ?? {})
+          },
+          storage_io: {
+            ...emptyDashboardSnapshot.storage_io,
+            ...(summary.dashboard.storage_io ?? {})
+          },
+          throughput: {
+            ...emptyDashboardSnapshot.throughput,
+            ...(summary.dashboard.throughput ?? {})
+          },
+          trust: {
+            ...emptyDashboardSnapshot.trust,
+            ...(summary.dashboard.trust ?? {})
+          }
+        });
+      }
       if (summary.ai_mode) {
         setLiveAiMode(summary.ai_mode);
       }
@@ -1272,6 +1590,10 @@ function PortalApp() {
           const next = prev + 1;
           if (next >= 2) {
             setSummaryError("Live summary unavailable");
+            setSummaryLoaded(true);
+            logPortalEvent("warn", "live_summary_unavailable", {
+              message: error?.message ?? "summary fetch failed"
+            });
           }
           return next;
         });
@@ -1356,16 +1678,20 @@ function PortalApp() {
   const handleStartDemo = async () => {
     setDemoLoading(true);
     setDemoError("");
+    logPortalEvent("info", "demo_start_requested", { parts: 5 });
     try {
       const response = await fetch(
         "/api/scheduler/v1/demo/wordcount/start?parts=5",
         { method: "POST" }
       );
       if (!response.ok) {
+        const message = await readApiError(response);
         setDemoError("Failed to start demo");
+        logPortalEvent("error", "demo_start_failed", { status: response.status, message });
       }
     } catch (error) {
       setDemoError("Failed to start demo");
+      logPortalEvent("error", "demo_start_failed", { message: error?.message });
     } finally {
       setDemoLoading(false);
     }
@@ -1376,6 +1702,7 @@ function PortalApp() {
       return;
     }
     setCreateProjectState("loading");
+    logPortalEvent("info", "create_project_clicked");
     window.setTimeout(() => {
       setCreateProjectState("success");
       window.setTimeout(() => setCreateProjectState("idle"), 1200);
@@ -1416,22 +1743,26 @@ function PortalApp() {
       error: "",
       success: ""
     }));
+    logPortalEvent("info", "bpsw_sync_requested");
     try {
       const response = await fetch(
         "/api/scheduler/v1/projects/bpsw/scripts/sync",
         { method: "POST" }
       );
       if (!response.ok) {
+        const message = await readApiError(response);
         setBpswState((prev) => ({
           ...prev,
-          error: "Failed to sync BPSW scripts"
+          error: message || "Failed to sync scripts"
         }));
+        logPortalEvent("error", "bpsw_sync_failed", { status: response.status, message });
       }
     } catch (error) {
       setBpswState((prev) => ({
         ...prev,
-        error: "Failed to sync BPSW scripts"
+        error: "Failed to sync scripts"
       }));
+      logPortalEvent("error", "bpsw_sync_failed", { message: error?.message });
     } finally {
       setBpswState((prev) => ({
         ...prev,
@@ -1440,8 +1771,18 @@ function PortalApp() {
     }
   };
 
+
   const handleStartBpsw = async () => {
     if (bpswState.loading) {
+      return;
+    }
+    const bpswProject = projectsData.find((project) => project.name === "bpsw_hunter");
+    if (bpswProject && bpswProject.status === "active") {
+      await handleProjectAction(bpswProject, "stop");
+      return;
+    }
+    if (bpswProject && bpswProject.status === "paused") {
+      await handleProjectAction(bpswProject, "start");
       return;
     }
     const validationError = validateBpswRange();
@@ -1459,6 +1800,7 @@ function PortalApp() {
       error: "",
       success: ""
     }));
+    logPortalEvent("info", "bpsw_start_requested");
     try {
       const selectedTypes = Object.keys(bpswForm.taskTypes).filter(
         (taskType) => bpswForm.taskTypes[taskType]
@@ -1489,10 +1831,12 @@ function PortalApp() {
         }
       );
       if (!response.ok) {
+        const message = await readApiError(response);
         setBpswState((prev) => ({
           ...prev,
-          error: "Failed to start BPSW project"
+          error: message || "Failed to start project"
         }));
+        logPortalEvent("error", "bpsw_start_failed", { status: response.status, message });
         return;
       }
       const result = await response.json();
@@ -1500,11 +1844,22 @@ function PortalApp() {
         ...prev,
         success: result.total_tasks?.toString() || "ok"
       }));
+      if (result.project_id) {
+        setProjectsData((prev) =>
+          prev.map((entry) =>
+            entry.id === result.project_id
+              ? { ...entry, status: "active" }
+              : entry
+          )
+        );
+      }
+      logPortalEvent("info", "bpsw_start_success", { total_tasks: result.total_tasks });
     } catch (error) {
       setBpswState((prev) => ({
         ...prev,
-        error: "Failed to start BPSW project"
+        error: "Failed to start project"
       }));
+      logPortalEvent("error", "bpsw_start_failed", { message: error?.message });
     } finally {
       setBpswState((prev) => ({
         ...prev,
@@ -1513,9 +1868,82 @@ function PortalApp() {
     }
   };
 
-  const connectedAgents = liveAgents.filter(
-    (agent) => agent.status === "online"
-  ).length;
+  const updateProjectActionState = (projectId, patch) => {
+    setProjectActions((prev) => ({
+      ...prev,
+      [projectId]: {
+        ...(prev[projectId] ?? {}),
+        ...patch
+      }
+    }));
+  };
+
+  const handleProjectAction = async (project, action) => {
+    if (!project?.id) {
+      return;
+    }
+    updateProjectActionState(project.id, { loading: action, error: "" });
+    logPortalEvent("info", "project_action", { project_id: project.id, action });
+    try {
+      const response = await fetch(`/api/scheduler/v1/projects/${project.id}/${action}`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const message = await readApiError(response);
+        updateProjectActionState(project.id, {
+          loading: "",
+          error: message || "Project action failed"
+        });
+        logPortalEvent("error", "project_action_failed", {
+          project_id: project.id,
+          action,
+          status: response.status,
+          message
+        });
+        return;
+      }
+      const data = await response.json();
+      if (data?.project) {
+        setProjectsData((prev) =>
+          prev.map((entry) =>
+            entry.id === data.project.id
+              ? {
+                  ...entry,
+                  status: data.project.status,
+                  name: data.project.name,
+                  owner: data.project.owner_id ?? entry.owner
+                }
+              : entry
+          )
+        );
+      }
+      if (action === "stop" && data?.affected_tasks) {
+        updateProjectActionState(project.id, {
+          loading: "",
+          info: `Stopped tasks: ${data.affected_tasks}`
+        });
+      } else {
+        updateProjectActionState(project.id, { loading: "", info: "" });
+      }
+      logPortalEvent("info", "project_action_success", {
+        project_id: project.id,
+        action
+      });
+    } catch (error) {
+      updateProjectActionState(project.id, {
+        loading: "",
+        error: "Project action failed"
+      });
+      logPortalEvent("error", "project_action_failed", {
+        project_id: project.id,
+        action,
+        message: error?.message
+      });
+    }
+  };
+
+  const connectedAgents = agentsData.filter((agent) => agent.status === "online")
+    .length;
   const kpis = baseKpis.map((metric) => {
     if (metric.label === "Connected Agents") {
       return {
@@ -1541,19 +1969,36 @@ function PortalApp() {
         value: liveAiMode
       };
     }
+    if (metric.label === "Storage Usage") {
+      const totalMb =
+        (dashboardSnapshot.storage_io?.disk_read_mb ?? 0) +
+        (dashboardSnapshot.storage_io?.disk_write_mb ?? 0);
+      const value =
+        totalMb >= 1024
+          ? `${(totalMb / 1024).toFixed(1)} GB`
+          : `${totalMb.toFixed(1)} MB`;
+      return {
+        ...metric,
+        value
+      };
+    }
     return metric;
   });
 
   const tasks = useMemo(() => {
     return liveTasks.map((task, index) => {
+      const agentId =
+        agentsData.length > 0
+          ? agentsData[index % agentsData.length]?.id
+          : "auto";
       return {
         ...task,
         project: projectsData[index % projectsData.length]?.name ?? "Demo",
-        agent: liveAgents[index % liveAgents.length]?.id ?? "auto",
+        agent: agentId ?? "auto",
         priority: task.priority ?? "normal"
       };
     });
-  }, [liveTasks, liveAgents, projectsData]);
+  }, [liveTasks, agentsData, projectsData]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
@@ -1568,6 +2013,7 @@ function PortalApp() {
 
   const handleNavClick = (anchor) => {
     setActiveSection(anchor);
+    logPortalEvent("info", "nav_click", { anchor });
   };
 
   return (
@@ -1593,6 +2039,7 @@ function PortalApp() {
                 summaryError={summaryError}
                 summaryLoaded={summaryLoaded}
                 liveLoad={liveLoad}
+                dashboard={dashboardSnapshot}
                 sectionId="dashboard"
               />
               <DemoPage
@@ -1604,7 +2051,7 @@ function PortalApp() {
                 sectionId="demo"
               />
               <AgentsPage
-                liveAgents={liveAgents}
+                agents={agentsData}
                 summaryLoaded={summaryLoaded}
                 sectionId="agents"
               />
@@ -1625,8 +2072,10 @@ function PortalApp() {
                 onUpdateBpswForm={updateBpswForm}
                 onToggleBpswType={toggleBpswType}
                 onStartBpsw={handleStartBpsw}
+                onProjectAction={handleProjectAction}
                 onSyncBpsw={handleSyncBpsw}
                 bpswState={bpswState}
+                projectActions={projectActions}
                 sectionId="projects"
                 projects={projectsData}
               />
@@ -1666,9 +2115,9 @@ function PortalApp() {
         />
         <Route
           path="/agents"
-          element={<AgentsPage liveAgents={liveAgents} summaryLoaded={summaryLoaded} />}
+          element={<AgentsPage agents={agentsData} summaryLoaded={summaryLoaded} />}
         />
-        <Route path="/agents/:agentId" element={<AgentDetailPage liveAgents={liveAgents} />} />
+        <Route path="/agents/:agentId" element={<AgentDetailPage agents={agentsData} />} />
         <Route
           path="/tasks"
           element={
@@ -1694,15 +2143,23 @@ function PortalApp() {
               onUpdateBpswForm={updateBpswForm}
               onToggleBpswType={toggleBpswType}
               onStartBpsw={handleStartBpsw}
+              onProjectAction={handleProjectAction}
               onSyncBpsw={handleSyncBpsw}
               bpswState={bpswState}
+              projectActions={projectActions}
               projects={projectsData}
             />
           }
         />
         <Route
           path="/projects/:projectName"
-          element={<ProjectDetailPage projects={projectsData} />}
+          element={
+            <ProjectDetailPage
+              projects={projectsData}
+              onProjectAction={handleProjectAction}
+              projectActions={projectActions}
+            />
+          }
         />
         <Route path="/ai-mode" element={<AiModePage liveAiMode={liveAiMode} />} />
         <Route

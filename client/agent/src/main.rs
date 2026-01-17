@@ -13,7 +13,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex as StdMutex,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Disks, Networks, System};
 use tokio::{
@@ -45,6 +45,8 @@ Limitation of Liability: In no event shall the Newral platform or its developers
 
 Acceptance: By clicking "Accept" and using the Software, you indicate that you have read, understood, and agree to all the terms and conditions of this EULA. If you do not agree, do not use the Software.
 "#;
+
+const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Clone)]
 struct AgentConfig {
     node_id: String,
@@ -1848,6 +1850,15 @@ fn exceeded_limits(metrics: &AgentMetrics, limits: &ResourceLimits) -> Vec<Strin
 mod gui {
     use super::*;
     use eframe::egui;
+    use serde_json::Value;
+
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum AgentSection {
+        Overview,
+        Settings,
+        Limits,
+        Logs,
+    }
 
     pub fn run() {
         let log_buffer = LogBuffer::new(500);
@@ -1882,6 +1893,10 @@ mod gui {
         show_warn: bool,
         show_error: bool,
         show_success: bool,
+        section: AgentSection,
+        hardware_snapshot: Value,
+        last_metrics: Option<AgentMetrics>,
+        last_metrics_at: Instant,
     }
 
     impl AgentGui {
@@ -1959,6 +1974,10 @@ mod gui {
                 show_warn: true,
                 show_error: true,
                 show_success: true,
+                section: AgentSection::Overview,
+                hardware_snapshot: collect_hardware_info(),
+                last_metrics: None,
+                last_metrics_at: Instant::now(),
             }
         }
 
@@ -2103,6 +2122,12 @@ mod gui {
                 egui::Color32::from_rgb(148, 158, 170)
             };
 
+            if self.last_metrics_at.elapsed() >= Duration::from_secs(5) {
+                let mut system = System::new_all();
+                self.last_metrics = Some(collect_metrics(&mut system));
+                self.last_metrics_at = Instant::now();
+            }
+
             if self.eula_required {
                 egui::Window::new("End User License Agreement")
                     .collapsible(false)
@@ -2143,7 +2168,7 @@ mod gui {
                 ui.horizontal(|ui| {
                     ui.colored_label(status_color, "●");
                     ui.label(if connected { "Connected" } else { "Offline" });
-                    ui.label("Newral Agent");
+                    ui.label(format!("Newral Agent v{}", AGENT_VERSION));
                     if self.running {
                         let pause_label = if paused { "Resume" } else { "Pause" };
                         if ui.button(pause_label).clicked() {
@@ -2162,92 +2187,152 @@ mod gui {
                 });
             });
 
-            egui::SidePanel::left("settings_panel").show(ctx, |ui| {
-                ui.heading("Status");
+            egui::SidePanel::left("nav_panel").show(ctx, |ui| {
+                ui.heading("Newral Agent");
+                ui.label("Operations");
+                ui.separator();
+                ui.selectable_value(&mut self.section, AgentSection::Overview, "Overview");
+                ui.selectable_value(&mut self.section, AgentSection::Settings, "Settings");
+                ui.selectable_value(&mut self.section, AgentSection::Limits, "Limits");
+                ui.selectable_value(&mut self.section, AgentSection::Logs, "Logs");
+                ui.separator();
                 if blocked {
                     ui.colored_label(egui::Color32::RED, format!("Blocked: {}", blocked_reason));
                 } else if paused {
                     ui.colored_label(egui::Color32::from_rgb(179, 122, 10), "Paused");
                 }
-                ui.label(format!("Task: {}", current_task));
-                ui.label(format!("Last result: {}", last_result));
-                ui.label(format!("Last error: {}", last_error));
-                ui.separator();
-
-                ui.heading("Settings");
-                ui.label("Node ID");
-                ui.text_edit_singleline(&mut self.node_id);
-                ui.label("Display name");
-                ui.text_edit_singleline(&mut self.display_name);
-                ui.label("Project ID");
-                ui.text_edit_singleline(&mut self.project_id);
-                ui.label("Allowed task types (comma)");
-                ui.text_edit_singleline(&mut self.allowed_task_types);
-
-                ui.separator();
-                ui.label("Server");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.protocol, "http".to_string(), "HTTP");
-                    ui.radio_value(&mut self.protocol, "https".to_string(), "HTTPS");
-                });
-                ui.text_edit_singleline(&mut self.host);
-                ui.label(format!("URL: {}", self.scheduler_url()));
-
-                ui.separator();
-                ui.heading("Resource limits (%)");
-                ui.label("CPU");
-                ui.text_edit_singleline(&mut self.cpu_limit);
-                ui.label("GPU");
-                ui.text_edit_singleline(&mut self.gpu_limit);
-                ui.label("RAM");
-                ui.text_edit_singleline(&mut self.ram_limit);
-
-                if ui.button("Save settings").clicked() {
-                    self.save_settings();
-                }
-
-                ui.separator();
-                ui.heading("Log filters");
-                ui.checkbox(&mut self.show_info, "Info");
-                ui.checkbox(&mut self.show_warn, "Warn");
-                ui.checkbox(&mut self.show_error, "Error");
-                ui.checkbox(&mut self.show_success, "Success");
-
                 if let Some(err) = &self.last_error {
                     ui.colored_label(egui::Color32::RED, err);
                 }
             });
 
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("Live Log");
-                ui.separator();
+                match self.section {
+                    AgentSection::Overview => {
+                        ui.heading("Overview");
+                        ui.separator();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.group(|ui| {
+                                ui.label("Connection");
+                                ui.colored_label(status_color, if connected { "Online" } else { "Offline" });
+                                ui.label(format!("Project ID: {}", if self.project_id.is_empty() { "auto" } else { &self.project_id }));
+                            });
+                            ui.group(|ui| {
+                                ui.label("Current task");
+                                ui.label(current_task);
+                                ui.label(format!("Last result: {}", last_result));
+                            });
+                            ui.group(|ui| {
+                                ui.label("Last error");
+                                ui.label(last_error);
+                            });
+                        });
 
-                let lines = self.log_buffer.snapshot();
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for entry in lines {
-                            let show = match entry.level {
-                                LogLevel::Info => self.show_info,
-                                LogLevel::Warn => self.show_warn,
-                                LogLevel::Error => self.show_error,
-                                LogLevel::Success => self.show_success,
-                            };
-                            if !show {
-                                continue;
-                            }
-                            let color = match entry.level {
-                                LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
-                                LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
-                                LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
-                                LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
-                            };
-                            ui.colored_label(
-                                color,
-                                format!("[{}] {}", entry.level.label(), entry.message),
-                            );
+                        ui.add_space(12.0);
+                        ui.heading("Hardware");
+                        ui.separator();
+                        let cpu = self.hardware_snapshot.get("cpu_model").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let ram = self.hardware_snapshot.get("ram_total_mb").and_then(|v| v.as_f64()).map(|v| format!("{:.0} MB", v)).unwrap_or_else(|| "unknown".to_string());
+                        let disk = self.hardware_snapshot.get("disk_total_mb").and_then(|v| v.as_f64()).map(|v| format!("{:.0} MB", v)).unwrap_or_else(|| "unknown".to_string());
+                        let gpu = self.hardware_snapshot.get("gpu_model").and_then(|v| v.as_str()).unwrap_or("none");
+                        ui.label(format!("CPU: {cpu}"));
+                        ui.label(format!("RAM: {ram}"));
+                        ui.label(format!("Disk: {disk}"));
+                        ui.label(format!("GPU: {gpu}"));
+
+                        ui.add_space(12.0);
+                        ui.heading("Live metrics");
+                        ui.separator();
+                        if let Some(metrics) = &self.last_metrics {
+                            ui.label(format!(
+                                "CPU: {}%  RAM: {} / {} MB",
+                                metrics.cpu_load.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".to_string()),
+                                metrics.ram_used_mb.map(|v| format!("{v:.0}")).unwrap_or_else(|| "—".to_string()),
+                                metrics.ram_total_mb.map(|v| format!("{v:.0}")).unwrap_or_else(|| "—".to_string()),
+                            ));
+                            ui.label(format!(
+                                "Net RX: {}  Net TX: {}",
+                                metrics.net_rx_bytes.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string()),
+                                metrics.net_tx_bytes.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string()),
+                            ));
+                        } else {
+                            ui.label("Metrics collecting...");
                         }
-                    });
+                    }
+                    AgentSection::Settings => {
+                        ui.heading("Settings");
+                        ui.separator();
+                        ui.label("Node ID");
+                        ui.text_edit_singleline(&mut self.node_id);
+                        ui.label("Display name");
+                        ui.text_edit_singleline(&mut self.display_name);
+                        ui.label("Project ID");
+                        ui.text_edit_singleline(&mut self.project_id);
+                        ui.label("Allowed task types (comma separated)");
+                        ui.text_edit_singleline(&mut self.allowed_task_types);
+                        ui.separator();
+                        ui.label("Server");
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.protocol, "http".to_string(), "HTTP");
+                            ui.radio_value(&mut self.protocol, "https".to_string(), "HTTPS");
+                        });
+                        ui.text_edit_singleline(&mut self.host);
+                        ui.label(format!("URL: {}", self.scheduler_url()));
+                        if ui.button("Save settings").clicked() {
+                            self.save_settings();
+                        }
+                    }
+                    AgentSection::Limits => {
+                        ui.heading("Resource limits");
+                        ui.separator();
+                        ui.label("CPU limit (%)");
+                        ui.text_edit_singleline(&mut self.cpu_limit);
+                        ui.label("GPU limit (%)");
+                        ui.text_edit_singleline(&mut self.gpu_limit);
+                        ui.label("RAM limit (%)");
+                        ui.text_edit_singleline(&mut self.ram_limit);
+                        if ui.button("Save limits").clicked() {
+                            self.save_settings();
+                        }
+                    }
+                    AgentSection::Logs => {
+                        ui.heading("Logs");
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.show_info, "Info");
+                            ui.checkbox(&mut self.show_warn, "Warn");
+                            ui.checkbox(&mut self.show_error, "Error");
+                            ui.checkbox(&mut self.show_success, "Success");
+                        });
+                        ui.separator();
+                        let lines = self.log_buffer.snapshot();
+                        egui::ScrollArea::vertical()
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                for entry in lines {
+                                    let show = match entry.level {
+                                        LogLevel::Info => self.show_info,
+                                        LogLevel::Warn => self.show_warn,
+                                        LogLevel::Error => self.show_error,
+                                        LogLevel::Success => self.show_success,
+                                    };
+                                    if !show {
+                                        continue;
+                                    }
+                                    let color = match entry.level {
+                                        LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
+                                        LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
+                                        LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
+                                        LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
+                                    };
+                                    ui.colored_label(
+                                        color,
+                                        format!("[{}] {}", entry.level.label(), entry.message),
+                                    );
+                                }
+                            });
+                    }
+                }
             });
 
             ctx.request_repaint_after(Duration::from_millis(200));

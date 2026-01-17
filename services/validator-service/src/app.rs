@@ -2,6 +2,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use tower_http::trace::TraceLayer;
 
 use crate::handlers::{aggregate, healthz, readyz, recheck, validate};
 use crate::state::AppState;
@@ -13,5 +14,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/validate", post(validate))
         .route("/v1/sandbox/recheck", post(recheck))
         .route("/v1/sandbox/aggregate", post(aggregate))
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

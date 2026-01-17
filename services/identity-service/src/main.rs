@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() {
-    init_tracing();
+    let _guards = init_tracing("identity-service");
 
     let port = env_or("PORT", 8080u16);
     let max_devices_per_user = env_or("MAX_DEVICES_PER_USER", 5usize);

@@ -14,7 +14,7 @@ use crate::state::{AppState, ServerSandboxConfig};
 
 #[tokio::main]
 async fn main() {
-    init_tracing();
+    let _guards = init_tracing("validator-service");
 
     let port = env_or("PORT", 8080u16);
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is required");

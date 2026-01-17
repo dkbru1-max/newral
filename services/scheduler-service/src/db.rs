@@ -1,23 +1,29 @@
 use tokio_postgres::{Client, GenericClient};
 use uuid::Uuid;
 
-use crate::models::{Project, TaskQueueSummary, TaskSummary};
+use crate::models::{
+    AgentAvailabilitySnapshot, DashboardPoint, Project, StorageIoSnapshot, TaskQueueSummary,
+    TaskSummary, TrustSnapshot,
+};
 
 const SQL_LIST_PROJECTS: &str =
-    "SELECT id, guid, name, description, owner_id, is_demo, storage_prefix, created_at::text AS created_at \
+    "SELECT id, guid, name, description, owner_id, status, is_demo, storage_prefix, created_at::text AS created_at \
 FROM projects ORDER BY id";
 const SQL_INSERT_PROJECT: &str = "INSERT INTO projects (guid, name, description, owner_id, is_demo, storage_prefix) \
 VALUES ($1, $2, $3, $4, $5, $6) \
-RETURNING id, guid, name, description, owner_id, is_demo, storage_prefix, created_at::text AS created_at";
+RETURNING id, guid, name, description, owner_id, status, is_demo, storage_prefix, created_at::text AS created_at";
 const SQL_SELECT_PROJECT: &str =
-    "SELECT id, guid, name, description, owner_id, is_demo, storage_prefix, created_at::text AS created_at \
+    "SELECT id, guid, name, description, owner_id, status, is_demo, storage_prefix, created_at::text AS created_at \
 FROM projects WHERE id = $1";
 const SQL_DELETE_PROJECT: &str = "DELETE FROM projects WHERE id = $1";
 const SQL_CREATE_PROJECT_SCHEMA: &str = "SELECT create_project_schema($1, $2, $3)";
 const SQL_DROP_PROJECT_SCHEMA: &str = "SELECT drop_project_schema($1, $2, $3)";
 const SQL_SELECT_PROJECT_BY_NAME: &str =
-    "SELECT id, guid, name, description, owner_id, is_demo, storage_prefix, created_at::text AS created_at \
+    "SELECT id, guid, name, description, owner_id, status, is_demo, storage_prefix, created_at::text AS created_at \
 FROM projects WHERE name = $1";
+const SQL_UPDATE_PROJECT_STATUS: &str =
+    "UPDATE projects SET status = $2 WHERE id = $1 \
+RETURNING id, guid, name, description, owner_id, status, is_demo, storage_prefix, created_at::text AS created_at";
 const SQL_PROJECT_SCHEMA_NAME: &str = "SELECT project_schema_name($1, $2, $3)";
 const SQL_UPSERT_AGENT: &str = "INSERT INTO agents (agent_uid, display_name, cpu_limit_percent, gpu_limit_percent, ram_limit_percent, last_seen) \
 VALUES ($1, $2, $3, $4, $5, NOW()) \
@@ -30,6 +36,33 @@ last_seen = NOW(), \
 updated_at = NOW() \
 RETURNING id, blocked, blocked_reason";
 const SQL_SELECT_AGENT: &str = "SELECT id, blocked, blocked_reason FROM agents WHERE agent_uid = $1";
+const SQL_LIST_AGENTS: &str = "SELECT \
+    a.agent_uid::text AS agent_uid, \
+    a.display_name, \
+    a.blocked, \
+    a.blocked_reason, \
+    a.last_seen::text AS last_seen, \
+    CASE WHEN a.last_seen > NOW() - INTERVAL '30 seconds' THEN 'online' ELSE 'idle' END AS status, \
+    h.hardware, \
+    m.cpu_load, \
+    m.ram_used_mb, \
+    m.ram_total_mb, \
+    m.gpu_load, \
+    m.gpu_mem_used_mb, \
+    m.net_rx_bytes, \
+    m.net_tx_bytes, \
+    m.disk_read_bytes, \
+    m.disk_write_bytes \
+FROM agents a \
+LEFT JOIN agent_hardware h ON h.agent_id = a.id \
+LEFT JOIN LATERAL ( \
+    SELECT cpu_load, ram_used_mb, ram_total_mb, gpu_load, gpu_mem_used_mb, net_rx_bytes, net_tx_bytes, disk_read_bytes, disk_write_bytes \
+    FROM agent_metrics \
+    WHERE agent_id = a.id \
+    ORDER BY recorded_at DESC \
+    LIMIT 1 \
+) m ON true \
+ORDER BY a.updated_at DESC";
 const SQL_UPSERT_HARDWARE: &str = "INSERT INTO agent_hardware (agent_id, hardware) \
 VALUES ($1, $2) \
 ON CONFLICT (agent_id) DO UPDATE SET hardware = EXCLUDED.hardware, updated_at = NOW()";
@@ -102,11 +135,156 @@ pub fn task_results_allow_null_device_sql(schema: &str) -> String {
     )
 }
 
+pub fn task_stop_sql(schema: &str) -> String {
+    format!(
+        "UPDATE {}.tasks SET status = 'stopped', updated_at = NOW() WHERE status IN ('queued', 'running')",
+        schema
+    )
+}
+
 pub fn task_followup_exists_sql(schema: &str) -> String {
     format!(
         "SELECT 1 FROM {}.tasks WHERE payload->>'kind' = 'followup_report' LIMIT 1",
         schema
     )
+}
+
+pub async fn task_completed_buckets(
+    db: &mut Client,
+    schema: &str,
+    bucket_hours: i64,
+    buckets: i64,
+) -> Result<Vec<DashboardPoint>, String> {
+    let bucket_hours = bucket_hours.max(1);
+    let buckets = buckets.max(1);
+    let span_hours = bucket_hours * (buckets - 1);
+    let sql = format!(
+        "SELECT to_char(gs, 'HH24:MI') AS label, \
+        COALESCE(COUNT(t.id), 0) AS count \
+        FROM generate_series( \
+            date_trunc('hour', NOW()) - INTERVAL '{span_hours} hours', \
+            date_trunc('hour', NOW()), \
+            INTERVAL '{bucket_hours} hours' \
+        ) gs \
+        LEFT JOIN {schema}.tasks t \
+            ON t.updated_at >= gs \
+            AND t.updated_at < gs + INTERVAL '{bucket_hours} hours' \
+            AND t.status IN ('done', 'completed') \
+        GROUP BY gs \
+        ORDER BY gs"
+    );
+
+    let rows = db
+        .query(sql.as_str(), &[])
+        .await
+        .map_err(|err| format!("task bucket query failed: {err}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| DashboardPoint {
+            label: row.get::<_, String>("label"),
+            value: row.get::<_, i64>("count").max(0) as u64,
+        })
+        .collect())
+}
+
+pub async fn task_completed_last_hours(
+    db: &mut Client,
+    schema: &str,
+    hours: i64,
+) -> Result<u64, String> {
+    let hours = hours.max(1);
+    let sql = format!(
+        "SELECT COALESCE(COUNT(*), 0) AS count \
+        FROM {schema}.tasks \
+        WHERE status IN ('done', 'completed') \
+        AND updated_at >= NOW() - INTERVAL '{hours} hours'"
+    );
+    let row = db
+        .query_one(sql.as_str(), &[])
+        .await
+        .map_err(|err| format!("task completed query failed: {err}"))?;
+    Ok(row.get::<_, i64>("count").max(0) as u64)
+}
+
+pub async fn agent_availability_snapshot(
+    db: &mut Client,
+) -> Result<AgentAvailabilitySnapshot, String> {
+    let row = db
+        .query_one(
+            "SELECT \
+                COUNT(*) FILTER (WHERE blocked) AS blocked, \
+                COUNT(*) FILTER (WHERE last_seen IS NOT NULL AND last_seen > NOW() - INTERVAL '30 seconds') AS online, \
+                COUNT(*) FILTER (WHERE last_seen IS NULL OR last_seen <= NOW() - INTERVAL '30 seconds') AS idle \
+            FROM agents",
+            &[],
+        )
+        .await
+        .map_err(|err| format!("agent availability query failed: {err}"))?;
+
+    Ok(AgentAvailabilitySnapshot {
+        online: row.get::<_, i64>("online").max(0) as u64,
+        idle: row.get::<_, i64>("idle").max(0) as u64,
+        blocked: row.get::<_, i64>("blocked").max(0) as u64,
+    })
+}
+
+pub async fn trust_snapshot(db: &mut Client) -> Result<TrustSnapshot, String> {
+    let row = db
+        .query_one(
+            "SELECT COUNT(*) FILTER (WHERE blocked) AS blocked, COUNT(*) AS total FROM agents",
+            &[],
+        )
+        .await
+        .map_err(|err| format!("trust snapshot query failed: {err}"))?;
+    Ok(TrustSnapshot {
+        blocked_agents: row.get::<_, i64>("blocked").max(0) as u64,
+        total_agents: row.get::<_, i64>("total").max(0) as u64,
+    })
+}
+
+pub async fn storage_io_snapshot(db: &mut Client) -> Result<StorageIoSnapshot, String> {
+    let row = db
+        .query_one(
+            "SELECT \
+                COALESCE(SUM(disk_read_bytes), 0)::BIGINT AS disk_read_bytes, \
+                COALESCE(SUM(disk_write_bytes), 0)::BIGINT AS disk_write_bytes, \
+                COALESCE(SUM(net_rx_bytes), 0)::BIGINT AS net_rx_bytes, \
+                COALESCE(SUM(net_tx_bytes), 0)::BIGINT AS net_tx_bytes \
+            FROM ( \
+                SELECT DISTINCT ON (agent_id) disk_read_bytes, disk_write_bytes, net_rx_bytes, net_tx_bytes \
+                FROM agent_metrics \
+                ORDER BY agent_id, recorded_at DESC \
+            ) latest",
+            &[],
+        )
+        .await
+        .map_err(|err| format!("storage io query failed: {err}"))?;
+
+    let to_mb = |value: i64| (value as f64) / 1024.0 / 1024.0;
+    let read_bytes: i64 = match row.try_get("disk_read_bytes") {
+        Ok(value) => value,
+        Err(_) => 0,
+    };
+    let write_bytes: i64 = match row.try_get("disk_write_bytes") {
+        Ok(value) => value,
+        Err(_) => 0,
+    };
+    let net_rx_bytes: i64 = match row.try_get("net_rx_bytes") {
+        Ok(value) => value,
+        Err(_) => 0,
+    };
+    let net_tx_bytes: i64 = match row.try_get("net_tx_bytes") {
+        Ok(value) => value,
+        Err(_) => 0,
+    };
+
+    Ok(StorageIoSnapshot {
+        disk_read_mb: to_mb(read_bytes),
+        disk_write_mb: to_mb(write_bytes),
+        net_rx_mb: to_mb(net_rx_bytes),
+        net_tx_mb: to_mb(net_tx_bytes),
+    })
 }
 
 pub async fn list_projects(db: &mut Client) -> Result<Vec<Project>, String> {
@@ -123,6 +301,7 @@ pub async fn list_projects(db: &mut Client) -> Result<Vec<Project>, String> {
             name: row.get("name"),
             description: row.get("description"),
             owner_id: row.get("owner_id"),
+            status: row.get("status"),
             is_demo: row.get("is_demo"),
             storage_prefix: row.get("storage_prefix"),
             created_at: row.get("created_at"),
@@ -152,6 +331,7 @@ pub async fn insert_project(
         name: row.get("name"),
         description: row.get("description"),
         owner_id: row.get("owner_id"),
+        status: row.get("status"),
         is_demo: row.get("is_demo"),
         storage_prefix: row.get("storage_prefix"),
         created_at: row.get("created_at"),
@@ -163,6 +343,28 @@ pub async fn delete_project(db: &impl GenericClient, project_id: i64) -> Result<
         .await
         .map_err(|err| format!("delete project failed: {err}"))?;
     Ok(())
+}
+
+pub async fn update_project_status(
+    db: &impl GenericClient,
+    project_id: i64,
+    status: &str,
+) -> Result<Project, String> {
+    let row = db
+        .query_one(SQL_UPDATE_PROJECT_STATUS, &[&project_id, &status])
+        .await
+        .map_err(|err| format!("update project status failed: {err}"))?;
+    Ok(Project {
+        id: row.get("id"),
+        guid: row.get("guid"),
+        name: row.get("name"),
+        description: row.get("description"),
+        owner_id: row.get("owner_id"),
+        status: row.get("status"),
+        is_demo: row.get("is_demo"),
+        storage_prefix: row.get("storage_prefix"),
+        created_at: row.get("created_at"),
+    })
 }
 
 pub async fn create_project_schema(
@@ -203,6 +405,7 @@ pub async fn select_project_by_id(
         name: row.get("name"),
         description: row.get("description"),
         owner_id: row.get("owner_id"),
+        status: row.get("status"),
         is_demo: row.get("is_demo"),
         storage_prefix: row.get("storage_prefix"),
         created_at: row.get("created_at"),
@@ -224,6 +427,7 @@ pub async fn select_project_by_name(
         name: row.get("name"),
         description: row.get("description"),
         owner_id: row.get("owner_id"),
+        status: row.get("status"),
         is_demo: row.get("is_demo"),
         storage_prefix: row.get("storage_prefix"),
         created_at: row.get("created_at"),
@@ -376,6 +580,44 @@ pub async fn insert_agent_metrics(
     .await
     .map_err(|err| format!("insert metrics failed: {err}"))?;
     Ok(())
+}
+
+pub async fn list_agents(
+    db: &impl GenericClient,
+) -> Result<Vec<crate::models::AgentInfo>, String> {
+    let rows = db
+        .query(SQL_LIST_AGENTS, &[])
+        .await
+        .map_err(|err| format!("list agents failed: {err}"))?;
+    let mut agents = Vec::new();
+    for row in rows {
+        let metrics = if row.try_get::<_, Option<f32>>("cpu_load").is_ok() {
+            Some(crate::models::AgentMetrics {
+                cpu_load: row.try_get("cpu_load").ok(),
+                ram_used_mb: row.try_get("ram_used_mb").ok(),
+                ram_total_mb: row.try_get("ram_total_mb").ok(),
+                gpu_load: row.try_get("gpu_load").ok(),
+                gpu_mem_used_mb: row.try_get("gpu_mem_used_mb").ok(),
+                net_rx_bytes: row.try_get("net_rx_bytes").ok(),
+                net_tx_bytes: row.try_get("net_tx_bytes").ok(),
+                disk_read_bytes: row.try_get("disk_read_bytes").ok(),
+                disk_write_bytes: row.try_get("disk_write_bytes").ok(),
+            })
+        } else {
+            None
+        };
+        agents.push(crate::models::AgentInfo {
+            agent_uid: row.get("agent_uid"),
+            display_name: row.get("display_name"),
+            status: row.get("status"),
+            last_seen: row.get("last_seen"),
+            blocked: row.get("blocked"),
+            blocked_reason: row.get("blocked_reason"),
+            hardware: row.try_get("hardware").ok(),
+            metrics,
+        });
+    }
+    Ok(agents)
 }
 
 pub async fn upsert_agent_preferences(

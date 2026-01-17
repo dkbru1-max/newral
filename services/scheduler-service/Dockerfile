@@ -10,7 +10,7 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 # Minimal runtime image.
-RUN useradd -m -u 10001 app
+RUN useradd -m -u 10001 app && mkdir -p /app/logs && chown -R app:app /app/logs
 WORKDIR /app
 COPY --from=builder /app/scheduler-service/target/release/scheduler-service /app/scheduler-service
 COPY scripts/bpsw /app/scripts/bpsw

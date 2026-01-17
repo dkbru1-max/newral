@@ -9,7 +9,7 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 # Minimal runtime image.
-RUN useradd -m -u 10001 app
+RUN useradd -m -u 10001 app && mkdir -p /app/logs && chown -R app:app /app/logs
 WORKDIR /app
 COPY --from=builder /app/identity-service/target/release/identity-service /app/identity-service
 EXPOSE 8080

@@ -6,15 +6,17 @@ use tokio_postgres::error::SqlState;
 
 use crate::db;
 use crate::models::{
-    AgentSummary, BpswBound, CreateProjectRequest, CreateProjectResponse, DemoResultResponse,
-    DemoStartParams, DemoStartResponse, DemoStatusResponse, ErrorResponse, HeartbeatRequest,
-    HeartbeatResponse, LiveSummary, Project, TaskBatchRequest, TaskBatchResponse, TaskAssignment,
-    TaskQueueSummary, TaskRequest, TaskResponse, TaskSubmitRequest, TaskSubmitResponse, WordCount,
+    AgentSummary, BpswBound, CreateProjectRequest, CreateProjectResponse, DashboardPoint,
+    DashboardSnapshot, DemoResultResponse, DemoStartParams, DemoStartResponse, DemoStatusResponse,
+    ErrorResponse, HeartbeatRequest, HeartbeatResponse, LiveSummary, Project, TaskAssignment,
+    TaskBatchRequest, TaskBatchResponse, TaskQueueSummary, TaskRequest, TaskResponse,
+    TaskSubmitRequest, TaskSubmitResponse, ThroughputSnapshot, WordCount,
 };
 use crate::policy::{PolicyDecision, ProposalSource, TaskRequestProposal};
+use newral_common::env_or;
 use crate::state::{AgentHeartbeat, AppState};
 use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use num_traits::{One, ToPrimitive, Zero};
 use uuid::Uuid;
 
 const DEMO_PROJECT_NAME: &str = "demo_wordcount";
@@ -70,6 +72,20 @@ fn app_version() -> String {
     raw.trim().to_string()
 }
 
+fn project_response(project: Project) -> crate::models::ProjectResponse {
+    crate::models::ProjectResponse {
+        id: project.id,
+        guid: project.guid,
+        name: project.name,
+        description: project.description,
+        owner_id: project.owner_id,
+        status: project.status,
+        is_demo: project.is_demo,
+        storage_prefix: project.storage_prefix,
+        created_at: project.created_at,
+    }
+}
+
 pub struct ServiceError {
     pub status: StatusCode,
     pub body: ErrorResponse,
@@ -113,6 +129,10 @@ pub async fn heartbeat(
     payload: HeartbeatRequest,
 ) -> Result<HeartbeatResponse, ServiceError> {
     let node_id = payload.node_id.as_deref().unwrap_or("unknown").to_string();
+    if let Ok((agent_uid, display_name)) = resolve_agent_uid(None, Some(node_id.as_str())) {
+        let db = state.db.lock().await;
+        let _ = db::upsert_agent(&*db, &agent_uid, &display_name, None, None, None).await;
+    }
     {
         let mut heartbeats = state.heartbeats.lock().await;
         heartbeats.insert(
@@ -138,23 +158,16 @@ pub async fn request_task(
         requested_tasks,
         source,
     };
-    if payload.agent_uid.is_none() {
-        return Err(ServiceError::new(
-            StatusCode::BAD_REQUEST,
-            "missing_agent_uid",
-            "agent_uid is required".to_string(),
-        ));
-    }
-
-    let (blocked, blocked_reason) = match resolve_agent_status(state, payload.agent_uid.as_deref())
-        .await
-    {
-        Ok(result) => result,
-        Err(err) => return Err(err),
+    let (agent_uid, display_name, record) =
+        resolve_agent_record(state, payload.agent_uid.as_deref(), payload.node_id.as_deref())
+            .await?;
+    let (blocked, blocked_reason) = match record {
+        Some(record) => (record.blocked, record.blocked_reason),
+        None => (false, None),
     };
     if blocked {
         return Ok(TaskResponse {
-            status: "blocked",
+            status: "blocked".to_string(),
             task_id: "".to_string(),
             policy_decision: "deny",
             granted_tasks: 0,
@@ -187,7 +200,8 @@ pub async fn request_task(
             let batch = request_task_batch(
                 state,
                 TaskBatchRequest {
-                    agent_uid: payload.agent_uid.clone().unwrap_or_default(),
+                    agent_uid: Some(agent_uid.to_string()),
+                    node_id: display_name,
                     requested_tasks: Some(granted_tasks),
                     proposal_source: payload.proposal_source.clone(),
                     project_id: payload.project_id,
@@ -201,7 +215,8 @@ pub async fn request_task(
             let batch = request_task_batch(
                 state,
                 TaskBatchRequest {
-                    agent_uid: payload.agent_uid.clone().unwrap_or_default(),
+                    agent_uid: Some(agent_uid.to_string()),
+                    node_id: display_name,
                     requested_tasks: Some(1),
                     proposal_source: payload.proposal_source.clone(),
                     project_id: payload.project_id,
@@ -266,6 +281,24 @@ pub async fn submit_task(
             "database error".to_string(),
         )
     })?;
+
+    if let Err(err) = db::update_project_status(&transaction, project.id, "active").await {
+        tracing::error!(error = %err, "update project status failed");
+        return Err(ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        ));
+    }
+
+    if let Err(err) = db::update_project_status(&transaction, project.id, "active").await {
+        tracing::error!(error = %err, "update project status failed");
+        return Err(ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        ));
+    }
 
     let insert_sql = db::task_result_insert_sql(&schema);
     if let Err(err) = transaction
@@ -345,22 +378,20 @@ pub async fn request_task_batch(
         PolicyDecision::Allowed { reasons } => ("allow", reasons, requested_tasks),
     };
 
-    let agent_uid = parse_agent_uid(payload.agent_uid.as_str())?;
+    let (agent_uid, display_name, record) =
+        resolve_agent_record(state, payload.agent_uid.as_deref(), payload.node_id.as_deref())
+            .await?;
     let mut db = state.db.lock().await;
-    let agent = db::select_agent(&*db, &agent_uid)
-        .await
-        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
-        .ok_or_else(|| {
-            ServiceError::new(
-                StatusCode::BAD_REQUEST,
-                "agent_not_registered",
-                "agent must register before requesting tasks".to_string(),
-            )
-        })?;
+    let agent = match record {
+        Some(record) => record,
+        None => db::upsert_agent(&*db, &agent_uid, &display_name, None, None, None)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?,
+    };
 
     if agent.blocked {
         return Ok(TaskBatchResponse {
-            status: "blocked",
+            status: "blocked".to_string(),
             policy_decision,
             granted_tasks: 0,
             reasons,
@@ -385,6 +416,18 @@ pub async fn request_task_batch(
         ensure_demo_project(&mut db).await?
     };
 
+    if project.status != "active" {
+        return Ok(TaskBatchResponse {
+            status: project.status.clone(),
+            policy_decision,
+            granted_tasks: 0,
+            reasons: vec!["project_not_active".to_string()],
+            tasks: Vec::new(),
+            blocked: false,
+            blocked_reason: None,
+        });
+    }
+
     let schema = schema_name_for_project(&mut db, &project).await?;
     let allowed_task_types = match payload.allowed_task_types {
         Some(types) if !types.is_empty() => Some(types),
@@ -404,7 +447,7 @@ pub async fn request_task_batch(
 
     notify_update(state);
     Ok(TaskBatchResponse {
-        status: "ok",
+        status: "ok".to_string(),
         policy_decision,
         granted_tasks,
         reasons,
@@ -520,6 +563,13 @@ pub async fn list_projects(state: &AppState) -> Result<Vec<Project>, ServiceErro
         .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))
 }
 
+pub async fn list_agents(state: &AppState) -> Result<Vec<crate::models::AgentInfo>, ServiceError> {
+    let db = state.db.lock().await;
+    db::list_agents(&*db)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))
+}
+
 pub async fn create_project(
     state: &AppState,
     payload: CreateProjectRequest,
@@ -598,19 +648,9 @@ pub async fn create_project(
         ));
     }
 
-    let storage_prefix = project.storage_prefix.clone();
     let response = CreateProjectResponse {
         status: "ok",
-        project: crate::models::ProjectResponse {
-            id: project.id,
-            guid: project.guid,
-            name: project.name,
-            description: project.description,
-            owner_id: project.owner_id,
-            is_demo: project.is_demo,
-            storage_prefix,
-            created_at: project.created_at,
-        },
+        project: project_response(project),
     };
 
     if let Some(storage) = &state.storage {
@@ -682,6 +722,81 @@ pub async fn delete_project(state: &AppState, project_id: i64) -> Result<(), Ser
     }
 
     Ok(())
+}
+
+pub async fn start_project(
+    state: &AppState,
+    project_id: i64,
+) -> Result<crate::models::ProjectControlResponse, ServiceError> {
+    let db = state.db.lock().await;
+    let project = db::update_project_status(&*db, project_id, "active")
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    Ok(crate::models::ProjectControlResponse {
+        status: "ok",
+        project: project_response(project),
+        affected_tasks: None,
+    })
+}
+
+pub async fn pause_project(
+    state: &AppState,
+    project_id: i64,
+) -> Result<crate::models::ProjectControlResponse, ServiceError> {
+    let db = state.db.lock().await;
+    let project = db::update_project_status(&*db, project_id, "paused")
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    Ok(crate::models::ProjectControlResponse {
+        status: "ok",
+        project: project_response(project),
+        affected_tasks: None,
+    })
+}
+
+pub async fn stop_project(
+    state: &AppState,
+    project_id: i64,
+) -> Result<crate::models::ProjectControlResponse, ServiceError> {
+    let mut db = state.db.lock().await;
+    let project = db::select_project_by_id(&mut db, project_id)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::NOT_FOUND,
+                "project_not_found",
+                "project not found".to_string(),
+            )
+        })?;
+    let schema = schema_name_for_project(&mut db, &project).await?;
+    let transaction = db.transaction().await.map_err(|_| {
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        )
+    })?;
+    let project = db::update_project_status(&transaction, project_id, "stopped")
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    let affected = transaction
+        .execute(db::task_stop_sql(&schema).as_str(), &[])
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    if let Err(err) = transaction.commit().await {
+        tracing::error!(error = %err, "commit failed");
+        return Err(ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        ));
+    }
+    Ok(crate::models::ProjectControlResponse {
+        status: "ok",
+        project: project_response(project),
+        affected_tasks: Some(affected as u64),
+    })
 }
 
 pub async fn start_demo_wordcount(
@@ -831,7 +946,14 @@ pub async fn status_demo_wordcount(state: &AppState) -> Result<DemoStatusRespons
 
     let schema = schema_name_for_project(&mut db, &project).await?;
     let counts = db
-        .query(db::task_status_counts_sql(&schema).as_str(), &[])
+        .query(
+            format!(
+                "SELECT status, COUNT(*) AS count FROM {}.tasks WHERE task_type = 'demo_wordcount' GROUP BY status",
+                schema
+            )
+            .as_str(),
+            &[],
+        )
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "status query failed");
@@ -891,7 +1013,14 @@ pub async fn result_demo_wordcount(
 
     let schema = schema_name_for_project(&mut db, &project).await?;
     let rows = db
-        .query(db::task_status_counts_sql(&schema).as_str(), &[])
+        .query(
+            format!(
+                "SELECT status, COUNT(*) AS count FROM {}.tasks WHERE task_type = 'demo_wordcount' GROUP BY status",
+                schema
+            )
+            .as_str(),
+            &[],
+        )
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "status query failed");
@@ -927,7 +1056,16 @@ pub async fn result_demo_wordcount(
     }
 
     let result_rows = db
-        .query(db::task_results_sql(&schema).as_str(), &[])
+        .query(
+            format!(
+                "SELECT r.result FROM {}.task_results r \
+                JOIN {}.tasks t ON t.id = r.task_id \
+                WHERE t.task_type = 'demo_wordcount'",
+                schema, schema
+            )
+            .as_str(),
+            &[],
+        )
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "results query failed");
@@ -1058,6 +1196,7 @@ pub async fn start_bpsw_project(
     }
 
     let chunk_size = payload.chunk_size.unwrap_or(10_000).max(1) as i64;
+    let max_tasks = env_or("MAX_BPSW_TASKS", 50_000u64);
     let mut total_tasks = 0usize;
     let transaction = db.transaction().await.map_err(|_| {
         ServiceError::new(
@@ -1141,6 +1280,20 @@ pub async fn start_bpsw_project(
         }
 
         for (start, end, preset) in task_specs {
+            let estimated = estimate_bpsw_chunks(&start, &end, chunk_size, default_step)
+                .map_err(|err| {
+                    ServiceError::new(StatusCode::BAD_REQUEST, "invalid_range", err)
+                })?;
+            if total_tasks as u64 + estimated > max_tasks {
+                return Err(ServiceError::new(
+                    StatusCode::BAD_REQUEST,
+                    "task_limit",
+                    format!(
+                        "range produces {} tasks; increase chunk_size or lower range (limit {})",
+                        estimated, max_tasks
+                    ),
+                ));
+            }
             for (chunk_start, chunk_end) in chunk_ranges(&start, &end, chunk_size, default_step) {
                 let mut args = vec![
                     "--task-type".to_string(),
@@ -1215,6 +1368,31 @@ pub async fn start_bpsw_project(
     })
 }
 
+fn estimate_bpsw_chunks(
+    start: &BigInt,
+    end: &BigInt,
+    chunk_size: i64,
+    step: i64,
+) -> Result<u64, String> {
+    if chunk_size <= 0 || step <= 0 {
+        return Err("chunk_size and step must be positive".to_string());
+    }
+    if start > end {
+        return Err("start must be <= end".to_string());
+    }
+    let span = end - start;
+    let step_big = BigInt::from(step);
+    let chunk_big = BigInt::from(chunk_size) * step_big;
+    let mut chunks = &span / chunk_big.clone();
+    if &span % chunk_big != BigInt::from(0) {
+        chunks += 1;
+    }
+    let chunks_u64 = chunks
+        .to_u64()
+        .ok_or_else(|| "range too large".to_string())?;
+    Ok(chunks_u64.max(1))
+}
+
 pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, ServiceError> {
     let now = SystemTime::now();
     let agents = {
@@ -1249,6 +1427,10 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
     let mut queue = TaskQueueSummary::default();
     let mut load = crate::models::LoadSummary::default();
     let mut tasks = Vec::new();
+    let mut bucket_totals: Vec<DashboardPoint> = Vec::new();
+    let mut completed_last_hour = 0u64;
+    let bucket_hours = 4;
+    let bucket_count = 7;
 
     for project in projects.iter() {
         let schema = schema_name_for_project(&mut db, project).await?;
@@ -1264,6 +1446,9 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
         load.completed_last_min += db::task_completed_last_min(&mut db, &schema)
             .await
             .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+        completed_last_hour += db::task_completed_last_hours(&mut db, &schema, 1)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
 
         if tasks.is_empty() {
             tasks = db::fetch_recent_tasks(&mut db, &schema)
@@ -1272,7 +1457,41 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
                     ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err)
                 })?;
         }
+
+        let buckets = db::task_completed_buckets(&mut db, &schema, bucket_hours, bucket_count)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+
+        if bucket_totals.is_empty() {
+            bucket_totals = buckets;
+        } else {
+            for (idx, point) in bucket_totals.iter_mut().enumerate() {
+                if let Some(bucket) = buckets.get(idx) {
+                    point.value += bucket.value;
+                }
+            }
+        }
     }
+
+    if bucket_totals.is_empty() {
+        bucket_totals = (0..bucket_count)
+            .map(|idx| DashboardPoint {
+                label: format!("-{}h", (bucket_count - 1 - idx) * bucket_hours),
+                value: 0,
+            })
+            .collect();
+    }
+
+    let tasks_total_24h = bucket_totals.iter().map(|point| point.value).sum();
+    let agent_availability = db::agent_availability_snapshot(&mut db)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    let trust = db::trust_snapshot(&mut db)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    let storage_io = db::storage_io_snapshot(&mut db)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
 
     let ai_mode = state.policy.config().ai_mode.to_string();
     let updated_at = now
@@ -1281,6 +1500,7 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
         .as_secs()
         .to_string();
 
+    let completed_last_min = load.completed_last_min;
     Ok(LiveSummary {
         updated_at,
         ai_mode,
@@ -1289,6 +1509,17 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
         queue,
         load,
         version: app_version(),
+        dashboard: DashboardSnapshot {
+            tasks_last_24h: bucket_totals,
+            tasks_total_24h,
+            agent_availability,
+            storage_io,
+            throughput: ThroughputSnapshot {
+                completed_last_min,
+                completed_last_hour,
+            },
+            trust,
+        },
     })
 }
 
@@ -1647,21 +1878,40 @@ fn batch_to_single(policy_decision: &'static str, batch: TaskBatchResponse) -> T
     }
 }
 
-async fn resolve_agent_status(
+async fn resolve_agent_record(
     state: &AppState,
     agent_uid: Option<&str>,
-) -> Result<(bool, Option<String>), ServiceError> {
-    let Some(agent_uid) = agent_uid else {
-        return Ok((false, None));
-    };
-    let agent_uid = parse_agent_uid(agent_uid)?;
+    node_id: Option<&str>,
+) -> Result<(Uuid, Option<String>, Option<db::AgentRecord>), ServiceError> {
+    let (agent_uid, display_name) = resolve_agent_uid(agent_uid, node_id)?;
     let db = state.db.lock().await;
     let agent = db::select_agent(&*db, &agent_uid)
         .await
         .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
-    Ok(agent
-        .map(|record| (record.blocked, record.blocked_reason))
-        .unwrap_or((false, None)))
+    Ok((agent_uid, display_name, agent))
+}
+
+fn resolve_agent_uid(
+    agent_uid: Option<&str>,
+    node_id: Option<&str>,
+) -> Result<(Uuid, Option<String>), ServiceError> {
+    if let Some(agent_uid) = agent_uid {
+        return Ok((parse_agent_uid(agent_uid)?, None));
+    }
+    if let Some(node_id) = node_id {
+        if let Ok(parsed) = Uuid::parse_str(node_id) {
+            return Ok((parsed, Some(node_id.to_string())));
+        }
+        return Ok((
+            Uuid::new_v5(&Uuid::NAMESPACE_URL, node_id.as_bytes()),
+            Some(node_id.to_string()),
+        ));
+    }
+    Err(ServiceError::new(
+        StatusCode::BAD_REQUEST,
+        "missing_agent_uid",
+        "agent_uid or node_id is required".to_string(),
+    ))
 }
 
 fn parse_agent_uid(value: &str) -> Result<Uuid, ServiceError> {
