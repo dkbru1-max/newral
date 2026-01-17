@@ -15,7 +15,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use sysinfo::{CpuExt, DisksExt, NetworksExt, System, SystemExt};
+use sysinfo::{Disks, Networks, System};
 use tokio::{
     io::AsyncReadExt,
     process::Command,
@@ -735,7 +735,6 @@ impl Agent {
 
     async fn run_loop(&self, stop: StopSignal) {
         let mut queue: VecDeque<Task> = VecDeque::new();
-        let mut rng = rand::thread_rng();
         loop {
             if stop.stopped() {
                 break;
@@ -805,7 +804,7 @@ impl Agent {
                     let delay = if min_delay >= max_delay {
                         min_delay
                     } else {
-                        rng.gen_range(min_delay..=max_delay)
+                        rand::thread_rng().gen_range(min_delay..=max_delay)
                     };
                     if stop.sleep_or_stop(Duration::from_secs(delay)).await {
                         break;
@@ -864,11 +863,10 @@ impl Agent {
         let url = format!("{}/v1/tasks/request_batch", self.config.scheduler_url);
         let min_batch = self.config.batch_min.max(1);
         let max_batch = self.config.batch_max.max(min_batch);
-        let mut rng = rand::thread_rng();
         let requested_tasks = if min_batch == max_batch {
             min_batch
         } else {
-            rng.gen_range(min_batch..=max_batch)
+            rand::thread_rng().gen_range(min_batch..=max_batch)
         };
         let response = self
             .client
@@ -1419,6 +1417,7 @@ fn build_command(python_bin: &str, script_path: &Path, args: Option<&Vec<String>
         }
         #[cfg(windows)]
         {
+            #[allow(unused_imports)]
             use std::os::windows::process::CommandExt;
             // Hide console window for sandbox processes.
             const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -1566,7 +1565,7 @@ fn load_config() -> Result<AgentConfig, String> {
 
     let node_id = env::var("NODE_ID")
         .ok()
-        .or(file_config.node_id)
+        .or(file_config.node_id.clone())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let node_id = if Uuid::parse_str(node_id.as_str()).is_ok() {
         node_id
@@ -1575,10 +1574,10 @@ fn load_config() -> Result<AgentConfig, String> {
     };
     let display_name = env::var("NODE_DISPLAY_NAME")
         .ok()
-        .or(file_config.display_name);
+        .or(file_config.display_name.clone());
     let scheduler_url = env::var("SCHEDULER_URL")
         .ok()
-        .or(file_config.scheduler_url)
+        .or(file_config.scheduler_url.clone())
         .unwrap_or_else(|| "http://localhost:8082".to_string());
     let heartbeat_interval = env::var("HEARTBEAT_INTERVAL_SECS")
         .ok()
@@ -1622,7 +1621,7 @@ fn load_config() -> Result<AgentConfig, String> {
         .unwrap_or(60);
     let python_bin = env::var("PYTHON_BIN")
         .ok()
-        .or(file_config.python_bin)
+        .or(file_config.python_bin.clone())
         .unwrap_or_else(|| "python3".to_string());
     let timeout_secs = env::var("SANDBOX_TIMEOUT_SECS")
         .ok()
@@ -1656,7 +1655,7 @@ fn load_config() -> Result<AgentConfig, String> {
     let allowed_task_types = env::var("ALLOWED_TASK_TYPES")
         .ok()
         .map(|value| value.split(',').map(|item| item.trim().to_string()).collect())
-        .or(file_config.allowed_task_types)
+        .or(file_config.allowed_task_types.clone())
         .unwrap_or_default();
     let limits = ResourceLimits {
         cpu_percent: env::var("CPU_LIMIT_PERCENT")
@@ -1731,7 +1730,8 @@ fn collect_hardware_info() -> serde_json::Value {
 
     let mut disk_total_mb = 0f64;
     let mut disk_available_mb = 0f64;
-    for disk in system.disks() {
+    let disks = Disks::new_with_refreshed_list();
+    for disk in disks.iter() {
         disk_total_mb += disk.total_space() as f64 / 1024.0 / 1024.0;
         disk_available_mb += disk.available_space() as f64 / 1024.0 / 1024.0;
     }
@@ -1791,7 +1791,8 @@ fn collect_gpu_metrics() -> Option<(f32, f32)> {
 fn collect_metrics(system: &mut System) -> AgentMetrics {
     system.refresh_cpu();
     system.refresh_memory();
-    system.refresh_networks();
+    let mut networks = Networks::new_with_refreshed_list();
+    networks.refresh();
 
     let cpu_load = Some(system.global_cpu_info().cpu_usage());
     let ram_used_mb = Some(system.used_memory() as f32 / 1024.0);
@@ -1802,7 +1803,7 @@ fn collect_metrics(system: &mut System) -> AgentMetrics {
 
     let mut net_rx: i64 = 0;
     let mut net_tx: i64 = 0;
-    for (_name, data) in system.networks() {
+    for (_name, data) in networks.iter() {
         net_rx += data.received() as i64;
         net_tx += data.transmitted() as i64;
     }
@@ -2113,7 +2114,7 @@ mod gui {
                             .show(ui, |ui| {
                                 ui.add(
                                     egui::Label::new(EULA_TEXT)
-                                        .wrap(true)
+                                        .wrap()
                                         .selectable(true),
                                 );
                             });
