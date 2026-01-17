@@ -1,3 +1,11 @@
+Update notes (v0.2.0)
+- Project isolation: GUID per project, separate Postgres schemas, MinIO prefixes.
+- BPSW workflow: script sync/start, hash verification, task types, real-range defaults.
+- Agent: EULA gate, batch tasks, preferences, metrics via sysinfo, local limits.
+- Portal: SPA navigation, breadcrumbs, BPSW controls, version display.
+- Builds: Rust 1.88 base images for aws-sdk compatibility.
+- Known gaps: BPSW DET pipeline, portal detail pages on mock data, agent CI workflow.
+
 # Newral MVP Plan (Vertical Slice, 2–4 Weeks)
 
 ## Scope (single source: `docs/PROJECT_BRIEF.md`)

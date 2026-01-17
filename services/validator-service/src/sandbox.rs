@@ -1,3 +1,4 @@
+use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::{
     env,
@@ -22,20 +23,17 @@ pub async fn run_server_sandbox(
     payload: &TaskPayload,
     sandbox: &ServerSandboxConfig,
 ) -> Result<ServerSandboxResult, String> {
-    let script = payload
-        .script
-        .as_deref()
-        .ok_or_else(|| "missing script".to_string())?;
-    let script_hash = hash_bytes(script.as_bytes());
+    let script_bytes = resolve_script(payload).await?;
+    let script_hash = hash_bytes(script_bytes.as_slice());
     let workspace = create_workspace("server")?;
     write_inputs(&workspace, payload.inputs.as_ref())?;
-    write_script(&workspace, script)?;
+    write_script(&workspace, script_bytes.as_slice())?;
     if dir_size(&workspace) > sandbox.workspace_limit_bytes {
         return Err("workspace limit exceeded".to_string());
     }
 
     let started_at = SystemTime::now();
-    let output = execute_python(&workspace, sandbox).await?;
+    let output = execute_python(&workspace, sandbox, payload.args.as_ref()).await?;
     if dir_size(&workspace) > sandbox.workspace_limit_bytes {
         return Err("workspace limit exceeded".to_string());
     }
@@ -66,9 +64,13 @@ pub async fn run_server_sandbox(
 async fn execute_python(
     workspace: &Path,
     sandbox: &ServerSandboxConfig,
+    args: Option<&Vec<String>>,
 ) -> Result<ExecutionOutput, String> {
     let mut command = Command::new(sandbox.python_bin.as_str());
     command.arg("-I").arg("task.py");
+    if let Some(args) = args {
+        command.args(args);
+    }
     command.current_dir(workspace);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -184,10 +186,41 @@ fn write_inputs(
     Ok(())
 }
 
-fn write_script(workspace: &Path, script: &str) -> Result<(), String> {
+fn write_script(workspace: &Path, script: &[u8]) -> Result<(), String> {
     let path = workspace.join("task.py");
     std::fs::write(path, script).map_err(|err| format!("write script: {err}"))?;
     Ok(())
+}
+
+async fn resolve_script(payload: &TaskPayload) -> Result<Vec<u8>, String> {
+    if let Some(script) = payload.script.as_deref() {
+        return Ok(script.as_bytes().to_vec());
+    }
+    let url = payload
+        .script_url
+        .as_deref()
+        .ok_or_else(|| "missing script".to_string())?;
+    let client = Client::new();
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("download script failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("download script failed: {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("read script bytes: {err}"))?;
+    let script_bytes = bytes.to_vec();
+    if let Some(expected) = payload.script_sha256.as_deref() {
+        let actual = hash_bytes(script_bytes.as_slice());
+        if actual != expected {
+            return Err("script hash mismatch".to_string());
+        }
+    }
+    Ok(script_bytes)
 }
 
 fn is_safe_filename(name: &str) -> bool {

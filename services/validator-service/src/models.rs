@@ -58,6 +58,9 @@ pub struct SandboxAggregateResponse {
 pub struct TaskPayload {
     pub kind: Option<String>,
     pub script: Option<String>,
+    pub script_url: Option<String>,
+    pub script_sha256: Option<String>,
+    pub args: Option<Vec<String>>,
     pub inputs: Option<HashMap<String, String>>,
     pub group_id: Option<String>,
     pub parent_task_id: Option<i64>,

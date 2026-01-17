@@ -17,3 +17,6 @@ tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "si
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+sysinfo = "0.30"
+uuid = { version = "1", features = ["v4"] }

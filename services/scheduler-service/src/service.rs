@@ -1,17 +1,21 @@
 use axum::http::StatusCode;
+use sha2::{Digest, Sha256};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_postgres::error::SqlState;
 
 use crate::db;
 use crate::models::{
-    AgentSummary, CreateProjectRequest, CreateProjectResponse, DemoResultResponse, DemoStartParams,
-    DemoStartResponse, DemoStatusResponse, ErrorResponse, HeartbeatRequest, HeartbeatResponse,
-    LiveSummary, Project, TaskQueueSummary, TaskRequest, TaskResponse, TaskSubmitRequest,
-    TaskSubmitResponse, WordCount,
+    AgentSummary, BpswBound, CreateProjectRequest, CreateProjectResponse, DemoResultResponse,
+    DemoStartParams, DemoStartResponse, DemoStatusResponse, ErrorResponse, HeartbeatRequest,
+    HeartbeatResponse, LiveSummary, Project, TaskBatchRequest, TaskBatchResponse, TaskAssignment,
+    TaskQueueSummary, TaskRequest, TaskResponse, TaskSubmitRequest, TaskSubmitResponse, WordCount,
 };
 use crate::policy::{PolicyDecision, ProposalSource, TaskRequestProposal};
 use crate::state::{AgentHeartbeat, AppState};
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
+use uuid::Uuid;
 
 const DEMO_PROJECT_NAME: &str = "demo_wordcount";
 const DEMO_SCRIPT: &str = r#"
@@ -27,6 +31,44 @@ for word in words:
 
 print(json.dumps(result))
 "#;
+const BPSW_PROJECT_NAME: &str = "bpsw_hunter";
+const BPSW_SCRIPT_FILENAME: &str = "bpsw_worker.py";
+const BPSW_TASK_TYPES: [&str; 6] = [
+    "main_odds",
+    "large_numbers",
+    "chernick",
+    "pomerance_lite",
+    "pomerance_modular",
+    "lambda_plus_one",
+];
+const BPSW_LARGE_START: &str = "1";
+const BPSW_LARGE_ZEROS: usize = 300;
+
+#[derive(Clone, Copy)]
+struct BpswRangePreset {
+    target_digits: i64,
+    prime_digits: i64,
+}
+
+const BPSW_RANGE_PRESETS: [BpswRangePreset; 3] = [
+    BpswRangePreset {
+        target_digits: 22,
+        prime_digits: 7,
+    },
+    BpswRangePreset {
+        target_digits: 100,
+        prime_digits: 18,
+    },
+    BpswRangePreset {
+        target_digits: 1000,
+        prime_digits: 19,
+    },
+];
+
+fn app_version() -> String {
+    let raw = include_str!("../../VERSION");
+    raw.trim().to_string()
+}
 
 pub struct ServiceError {
     pub status: StatusCode,
@@ -34,12 +76,12 @@ pub struct ServiceError {
 }
 
 impl ServiceError {
-    pub fn new(status: StatusCode, code: &'static str, message: String) -> Self {
+    pub fn new(status: StatusCode, code: &'static str, message: impl ToString) -> Self {
         Self {
             status,
             body: ErrorResponse {
                 code,
-                message,
+                message: message.to_string(),
                 reasons: Vec::new(),
             },
         }
@@ -48,14 +90,14 @@ impl ServiceError {
     pub fn with_reasons(
         status: StatusCode,
         code: &'static str,
-        message: String,
+        message: impl ToString,
         reasons: Vec<String>,
     ) -> Self {
         Self {
             status,
             body: ErrorResponse {
                 code,
-                message,
+                message: message.to_string(),
                 reasons,
             },
         }
@@ -96,6 +138,33 @@ pub async fn request_task(
         requested_tasks,
         source,
     };
+    if payload.agent_uid.is_none() {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "missing_agent_uid",
+            "agent_uid is required".to_string(),
+        ));
+    }
+
+    let (blocked, blocked_reason) = match resolve_agent_status(state, payload.agent_uid.as_deref())
+        .await
+    {
+        Ok(result) => result,
+        Err(err) => return Err(err),
+    };
+    if blocked {
+        return Ok(TaskResponse {
+            status: "blocked",
+            task_id: "".to_string(),
+            policy_decision: "deny",
+            granted_tasks: 0,
+            reasons: Vec::new(),
+            payload: None,
+            project_id: None,
+            blocked,
+            blocked_reason,
+        });
+    }
 
     // Evaluate against deterministic policy first.
     let decision = state.policy.evaluate_task_request(proposal);
@@ -107,82 +176,42 @@ pub async fn request_task(
         "policy evaluation"
     );
 
-    let response = match decision {
-        PolicyDecision::Denied { reasons } => {
-            return Err(ServiceError::with_reasons(
-                StatusCode::FORBIDDEN,
-                "policy_denied",
-                "request denied by policy".to_string(),
-                reasons,
-            ));
-        }
-        PolicyDecision::Limited {
-            granted_tasks,
+    match decision {
+        PolicyDecision::Denied { reasons } => Err(ServiceError::with_reasons(
+            StatusCode::FORBIDDEN,
+            "policy_denied",
+            "request denied by policy".to_string(),
             reasons,
-        } => {
-            let mut db = state.db.lock().await;
-            match fetch_demo_task(&mut db).await {
-                Ok(Some(task)) => TaskResponse {
-                    status: "ok",
-                    task_id: task.id.to_string(),
-                    policy_decision: "limit",
-                    granted_tasks,
-                    reasons,
-                    payload: Some(task.payload),
-                    project_id: Some(task.project_id),
+        )),
+        PolicyDecision::Limited { granted_tasks, .. } => {
+            let batch = request_task_batch(
+                state,
+                TaskBatchRequest {
+                    agent_uid: payload.agent_uid.clone().unwrap_or_default(),
+                    requested_tasks: Some(granted_tasks),
+                    proposal_source: payload.proposal_source.clone(),
+                    project_id: payload.project_id,
+                    allowed_task_types: payload.allowed_task_types.clone(),
                 },
-                Ok(None) => TaskResponse {
-                    status: "ok",
-                    task_id: "".to_string(),
-                    policy_decision: "limit",
-                    granted_tasks: 0,
-                    reasons,
-                    payload: None,
-                    project_id: None,
-                },
-                Err(err) => {
-                    return Err(ServiceError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "db_error",
-                        err,
-                    ));
-                }
-            }
+            )
+            .await?;
+            Ok(batch_to_single("limit", batch))
         }
-        PolicyDecision::Allowed { reasons } => {
-            let mut db = state.db.lock().await;
-            match fetch_demo_task(&mut db).await {
-                Ok(Some(task)) => TaskResponse {
-                    status: "ok",
-                    task_id: task.id.to_string(),
-                    policy_decision: "allow",
-                    granted_tasks: 1,
-                    reasons,
-                    payload: Some(task.payload),
-                    project_id: Some(task.project_id),
+        PolicyDecision::Allowed { .. } => {
+            let batch = request_task_batch(
+                state,
+                TaskBatchRequest {
+                    agent_uid: payload.agent_uid.clone().unwrap_or_default(),
+                    requested_tasks: Some(1),
+                    proposal_source: payload.proposal_source.clone(),
+                    project_id: payload.project_id,
+                    allowed_task_types: payload.allowed_task_types.clone(),
                 },
-                Ok(None) => TaskResponse {
-                    status: "ok",
-                    task_id: "".to_string(),
-                    policy_decision: "allow",
-                    granted_tasks: 0,
-                    reasons,
-                    payload: None,
-                    project_id: None,
-                },
-                Err(err) => {
-                    return Err(ServiceError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "db_error",
-                        err,
-                    ));
-                }
-            }
+            )
+            .await?;
+            Ok(batch_to_single("allow", batch))
         }
-    };
-
-    notify_update(state);
-    Ok(response)
+    }
 }
 
 pub async fn submit_task(
@@ -288,6 +317,202 @@ pub async fn submit_task(
     Ok(TaskSubmitResponse { status: "ok" })
 }
 
+pub async fn request_task_batch(
+    state: &AppState,
+    payload: TaskBatchRequest,
+) -> Result<TaskBatchResponse, ServiceError> {
+    let requested_tasks = payload.requested_tasks.unwrap_or(1);
+    let source = ProposalSource::from_optional(payload.proposal_source.as_deref());
+    let proposal = TaskRequestProposal {
+        requested_tasks,
+        source,
+    };
+
+    let decision = state.policy.evaluate_task_request(proposal);
+    let (policy_decision, reasons, granted_tasks) = match decision {
+        PolicyDecision::Denied { reasons } => {
+            return Err(ServiceError::with_reasons(
+                StatusCode::FORBIDDEN,
+                "policy_denied",
+                "request denied by policy".to_string(),
+                reasons,
+            ));
+        }
+        PolicyDecision::Limited {
+            granted_tasks,
+            reasons,
+        } => ("limit", reasons, granted_tasks),
+        PolicyDecision::Allowed { reasons } => ("allow", reasons, requested_tasks),
+    };
+
+    let agent_uid = parse_agent_uid(payload.agent_uid.as_str())?;
+    let mut db = state.db.lock().await;
+    let agent = db::select_agent(&*db, &agent_uid)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "agent_not_registered",
+                "agent must register before requesting tasks".to_string(),
+            )
+        })?;
+
+    if agent.blocked {
+        return Ok(TaskBatchResponse {
+            status: "blocked",
+            policy_decision,
+            granted_tasks: 0,
+            reasons,
+            tasks: Vec::new(),
+            blocked: true,
+            blocked_reason: agent.blocked_reason,
+        });
+    }
+
+    let project = if let Some(project_id) = payload.project_id {
+        db::select_project_by_id(&mut db, project_id)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+            .ok_or_else(|| {
+                ServiceError::new(
+                    StatusCode::NOT_FOUND,
+                    "project_not_found",
+                    "project not found".to_string(),
+                )
+            })?
+    } else {
+        ensure_demo_project(&mut db).await?
+    };
+
+    let schema = schema_name_for_project(&mut db, &project).await?;
+    let allowed_task_types = match payload.allowed_task_types {
+        Some(types) if !types.is_empty() => Some(types),
+        _ => db::fetch_agent_preferences(&mut db, agent.id, project.id)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?,
+    };
+
+    let tasks = fetch_tasks_batch(
+        &mut db,
+        schema.as_str(),
+        project.id,
+        allowed_task_types.as_ref(),
+        granted_tasks,
+    )
+    .await?;
+
+    notify_update(state);
+    Ok(TaskBatchResponse {
+        status: "ok",
+        policy_decision,
+        granted_tasks,
+        reasons,
+        tasks,
+        blocked: false,
+        blocked_reason: None,
+    })
+}
+
+pub async fn register_agent(
+    state: &AppState,
+    payload: crate::models::AgentRegisterRequest,
+) -> Result<crate::models::AgentRegisterResponse, ServiceError> {
+    let agent_uid = parse_agent_uid(payload.agent_uid.as_str())?;
+    let limits = payload.limits;
+    let db = state.db.lock().await;
+    let agent = db::upsert_agent(
+        &*db,
+        &agent_uid,
+        &payload.display_name,
+        limits.as_ref().and_then(|value| value.cpu_percent),
+        limits.as_ref().and_then(|value| value.gpu_percent),
+        limits.as_ref().and_then(|value| value.ram_percent),
+    )
+    .await
+    .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+
+    db::upsert_agent_hardware(&*db, agent.id, &payload.hardware)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+
+    if let Some(preferences) = payload.preferences {
+        for preference in preferences {
+            db::upsert_agent_preferences(
+                &*db,
+                agent.id,
+                preference.project_id,
+                preference.allowed_task_types.as_slice(),
+            )
+            .await
+            .map_err(|err| {
+                ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err)
+            })?;
+        }
+    }
+
+    Ok(crate::models::AgentRegisterResponse {
+        status: "ok",
+        blocked: agent.blocked,
+        blocked_reason: agent.blocked_reason,
+    })
+}
+
+pub async fn update_agent_metrics(
+    state: &AppState,
+    payload: crate::models::AgentMetricsRequest,
+) -> Result<crate::models::HeartbeatResponse, ServiceError> {
+    let agent_uid = parse_agent_uid(payload.agent_uid.as_str())?;
+    let db = state.db.lock().await;
+    let agent = db::select_agent(&*db, &agent_uid)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "agent_not_registered",
+                "agent must register before sending metrics".to_string(),
+            )
+        })?;
+
+    db::insert_agent_metrics(&*db, agent.id, &payload.metrics)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    notify_update(state);
+    Ok(HeartbeatResponse { status: "ok" })
+}
+
+pub async fn update_agent_preferences(
+    state: &AppState,
+    payload: crate::models::AgentPreferencesRequest,
+) -> Result<crate::models::HeartbeatResponse, ServiceError> {
+    let agent_uid = parse_agent_uid(payload.agent_uid.as_str())?;
+    let db = state.db.lock().await;
+    let agent = db::select_agent(&*db, &agent_uid)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "agent_not_registered",
+                "agent must register before updating preferences".to_string(),
+            )
+        })?;
+
+    for preference in payload.preferences {
+        db::upsert_agent_preferences(
+            &*db,
+            agent.id,
+            preference.project_id,
+            preference.allowed_task_types.as_slice(),
+        )
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    }
+
+    Ok(HeartbeatResponse { status: "ok" })
+}
+
 pub async fn list_projects(state: &AppState) -> Result<Vec<Project>, ServiceError> {
     let mut db = state.db.lock().await;
     db::list_projects(&mut db)
@@ -313,6 +538,9 @@ pub async fn create_project(
         ));
     };
 
+    let guid = uuid::Uuid::new_v4();
+    let storage_prefix = guid.to_string();
+
     let transaction = db.transaction().await.map_err(|_| {
         ServiceError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -321,7 +549,17 @@ pub async fn create_project(
         )
     })?;
 
-    let project = match db::insert_project(&transaction, &name, &description, &owner_id).await {
+    let project = match db::insert_project(
+        &transaction,
+        &guid,
+        &name,
+        &description,
+        &owner_id,
+        false,
+        &storage_prefix,
+    )
+    .await
+    {
         Ok(project) => project,
         Err(err) => {
             if let Some(db_err) = err.as_db_error() {
@@ -360,16 +598,31 @@ pub async fn create_project(
         ));
     }
 
-    Ok(CreateProjectResponse {
+    let storage_prefix = project.storage_prefix.clone();
+    let response = CreateProjectResponse {
         status: "ok",
         project: crate::models::ProjectResponse {
             id: project.id,
+            guid: project.guid,
             name: project.name,
             description: project.description,
             owner_id: project.owner_id,
+            is_demo: project.is_demo,
+            storage_prefix,
             created_at: project.created_at,
         },
-    })
+    };
+
+    if let Some(storage) = &state.storage {
+        if let Err(err) = storage
+            .ensure_project_prefix(response.project.storage_prefix.as_str())
+            .await
+        {
+            tracing::warn!(error = %err, "minio prefix init failed");
+        }
+    }
+
+    Ok(response)
 }
 
 pub async fn delete_project(state: &AppState, project_id: i64) -> Result<(), ServiceError> {
@@ -384,6 +637,14 @@ pub async fn delete_project(state: &AppState, project_id: i64) -> Result<(), Ser
                 "project not found".to_string(),
             )
         })?;
+
+    if project.is_demo {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "demo_project",
+            "demo project cannot be deleted".to_string(),
+        ));
+    }
 
     let transaction = db.transaction().await.map_err(|_| {
         ServiceError::new(
@@ -431,6 +692,14 @@ pub async fn start_demo_wordcount(
 
     let mut db = state.db.lock().await;
     let project = ensure_demo_project(&mut db).await?;
+    if let Some(storage) = &state.storage {
+        if let Err(err) = storage
+            .ensure_project_prefix(project.storage_prefix.as_str())
+            .await
+        {
+            tracing::warn!(error = %err, "minio prefix init failed");
+        }
+    }
     let schema = schema_name_for_project(&mut db, &project).await?;
 
     let text = generate_demo_text();
@@ -493,7 +762,7 @@ pub async fn start_demo_wordcount(
         "total": total_tasks,
     });
     let parent_row = transaction
-        .query_one(insert_sql.as_str(), &[&"group", &parent_payload])
+        .query_one(insert_sql.as_str(), &[&"group", &"demo_group", &parent_payload])
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "insert parent task failed");
@@ -516,7 +785,7 @@ pub async fn start_demo_wordcount(
             }
         });
         transaction
-            .query_one(insert_sql.as_str(), &[&"queued", &payload])
+            .query_one(insert_sql.as_str(), &[&"queued", &"demo_wordcount", &payload])
             .await
             .map_err(|err| {
                 tracing::error!(error = %err, "insert task failed");
@@ -703,6 +972,249 @@ pub async fn result_demo_wordcount(
     ))
 }
 
+pub async fn sync_bpsw_scripts(
+    state: &AppState,
+) -> Result<crate::models::BpswScriptSyncResponse, ServiceError> {
+    let storage = state.storage.as_ref().ok_or_else(|| {
+        ServiceError::new(
+            StatusCode::FAILED_DEPENDENCY,
+            "storage_unavailable",
+            "minio is not configured".to_string(),
+        )
+    })?;
+
+    let script_path = std::env::var("BPSW_SCRIPT_PATH")
+        .unwrap_or_else(|_| format!("scripts/bpsw/{BPSW_SCRIPT_FILENAME}"));
+    let script_bytes = std::fs::read(script_path.as_str()).map_err(|err| {
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "script_read_failed",
+            format!("script read failed: {err}"),
+        )
+    })?;
+    let script_hash = hash_bytes(script_bytes.as_slice());
+
+    let mut db = state.db.lock().await;
+    let project = ensure_bpsw_project(&mut db).await?;
+    let object_key = format!(
+        "{}/scripts/{}",
+        project.storage_prefix, BPSW_SCRIPT_FILENAME
+    );
+
+    storage
+        .put_object(object_key.as_str(), script_bytes)
+        .await
+        .map_err(|err| {
+            ServiceError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "script_upload_failed",
+                err,
+            )
+        })?;
+
+    for task_type in BPSW_TASK_TYPES.iter() {
+        db::upsert_project_task_type(
+            &*db,
+            project.id,
+            task_type,
+            object_key.as_str(),
+            script_hash.as_str(),
+            Some("4.3.0"),
+        )
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    }
+
+    Ok(crate::models::BpswScriptSyncResponse {
+        status: "ok",
+        project_id: project.id,
+        task_types: BPSW_TASK_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+    })
+}
+
+pub async fn start_bpsw_project(
+    state: &AppState,
+    payload: crate::models::BpswStartRequest,
+) -> Result<crate::models::BpswStartResponse, ServiceError> {
+    let mut db = state.db.lock().await;
+    let project = ensure_bpsw_project(&mut db).await?;
+    let schema = schema_name_for_project(&mut db, &project).await?;
+    let task_types = payload
+        .task_types
+        .unwrap_or_else(|| BPSW_TASK_TYPES.iter().map(|value| value.to_string()).collect());
+
+    let script_records = db::fetch_task_types(&mut db, project.id)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    if script_records.is_empty() {
+        return Err(ServiceError::new(
+            StatusCode::PRECONDITION_FAILED,
+            "scripts_not_synced",
+            "sync bpsw scripts first".to_string(),
+        ));
+    }
+
+    let chunk_size = payload.chunk_size.unwrap_or(10_000).max(1) as i64;
+    let mut total_tasks = 0usize;
+    let transaction = db.transaction().await.map_err(|_| {
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        )
+    })?;
+
+    for task_type in task_types.iter() {
+        let record = script_records
+            .iter()
+            .find(|(kind, _, _)| kind == task_type)
+            .ok_or_else(|| {
+                ServiceError::new(
+                    StatusCode::BAD_REQUEST,
+                    "unknown_task_type",
+                    format!("task type {task_type} not configured"),
+                )
+            })?;
+
+        let (object_key, script_hash) = (record.1.as_str(), record.2.as_str());
+        let script_url = if let Some(storage) = &state.storage {
+            storage
+                .presign_get(object_key, 3600)
+                .await
+                .map_err(|err| {
+                    ServiceError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "script_presign_failed",
+                        err,
+                    )
+                })?
+        } else {
+            return Err(ServiceError::new(
+                StatusCode::FAILED_DEPENDENCY,
+                "storage_unavailable",
+                "minio is not configured".to_string(),
+            ));
+        };
+
+        let global_start = parse_bpsw_bound(payload.start.as_ref());
+        let global_end = parse_bpsw_bound(payload.end.as_ref());
+        let default_step = if task_type == "main_odds" || task_type == "large_numbers" {
+            2
+        } else {
+            1
+        };
+
+        let mut task_specs = Vec::new();
+        if task_type == "main_odds" {
+            let start = global_start.unwrap_or_else(default_main_odds_start);
+            let end = global_end.unwrap_or_else(|| chunk_end_from(&start, chunk_size, default_step));
+            task_specs.push((start, end, None));
+        } else if task_type == "large_numbers" {
+            let start = global_start.unwrap_or_else(default_large_numbers_start);
+            let end = global_end.unwrap_or_else(|| chunk_end_from(&start, chunk_size, default_step));
+            task_specs.push((start, end, None));
+        } else if task_type == "chernick" {
+            if let (Some(start), Some(end)) = (global_start, global_end) {
+                task_specs.push((start, end, None));
+            } else {
+                for preset in BPSW_RANGE_PRESETS.iter() {
+                    let k_start = chernick_k_start(preset.target_digits);
+                    let k_end = chunk_end_from(&k_start, chunk_size, default_step);
+                    task_specs.push((k_start, k_end, Some(*preset)));
+                }
+            }
+        } else {
+            if let (Some(start), Some(end)) = (global_start, global_end) {
+                for preset in BPSW_RANGE_PRESETS.iter() {
+                    task_specs.push((start.clone(), end.clone(), Some(*preset)));
+                }
+            } else {
+                let seed_start = num_bigint::BigInt::from(1);
+                let seed_end = chunk_end_from(&seed_start, chunk_size, default_step);
+                for preset in BPSW_RANGE_PRESETS.iter() {
+                    task_specs.push((seed_start.clone(), seed_end.clone(), Some(*preset)));
+                }
+            }
+        }
+
+        for (start, end, preset) in task_specs {
+            for (chunk_start, chunk_end) in chunk_ranges(&start, &end, chunk_size, default_step) {
+                let mut args = vec![
+                    "--task-type".to_string(),
+                    task_type.to_string(),
+                ];
+                match task_type.as_str() {
+                    "main_odds" | "large_numbers" | "chernick" => {
+                        args.push("--start".to_string());
+                        args.push(chunk_start.clone());
+                        args.push("--end".to_string());
+                        args.push(chunk_end.clone());
+                        if task_type == "chernick" {
+                            args.push("--require-prime-factors".to_string());
+                        }
+                    }
+                    _ => {
+                        let preset = preset.expect("preset expected for generator tasks");
+                        args.push("--seed-start".to_string());
+                        args.push(chunk_start.clone());
+                        args.push("--seed-end".to_string());
+                        args.push(chunk_end.clone());
+                        args.push("--target-digits".to_string());
+                        args.push(preset.target_digits.to_string());
+                        args.push("--prime-digits".to_string());
+                        args.push(preset.prime_digits.to_string());
+                        args.push("--max-steps".to_string());
+                        args.push("5000".to_string());
+                        if task_type == "lambda_plus_one" {
+                            args.push("--require-prime".to_string());
+                        }
+                    }
+                }
+
+                let task_payload = json!({
+                    "kind": "script_ref",
+                    "task_type": task_type,
+                    "script_url": script_url,
+                    "script_sha256": script_hash,
+                    "args": args
+                });
+                transaction
+                    .execute(
+                        db::task_insert_sql(&schema).as_str(),
+                        &[&"queued", &task_type, &task_payload],
+                    )
+                    .await
+                    .map_err(|err| {
+                        ServiceError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "db_error",
+                            format!("insert task failed: {err}"),
+                        )
+                    })?;
+                total_tasks += 1;
+            }
+        }
+    }
+
+    transaction.commit().await.map_err(|err| {
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            format!("commit failed: {err}"),
+        )
+    })?;
+
+    notify_update(state);
+    Ok(crate::models::BpswStartResponse {
+        status: "ok",
+        project_id: project.id,
+        total_tasks,
+    })
+}
+
 pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, ServiceError> {
     let now = SystemTime::now();
     let agents = {
@@ -776,6 +1288,7 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
         tasks,
         queue,
         load,
+        version: app_version(),
     })
 }
 
@@ -795,6 +1308,69 @@ fn generate_demo_text() -> String {
         text.push(' ');
     }
     text
+}
+
+fn parse_bpsw_bound(bound: Option<&BpswBound>) -> Option<BigInt> {
+    match bound {
+        Some(BpswBound::Int(value)) => Some(BigInt::from(*value)),
+        Some(BpswBound::Str(value)) => BigInt::parse_bytes(value.as_bytes(), 10),
+        None => None,
+    }
+}
+
+fn default_main_odds_start() -> BigInt {
+    BigInt::parse_bytes(b"100000000000000000001", 10).unwrap_or_else(BigInt::zero)
+}
+
+fn default_large_numbers_start() -> BigInt {
+    let mut value = String::from(BPSW_LARGE_START);
+    value.push_str(&"0".repeat(BPSW_LARGE_ZEROS));
+    value.push('1');
+    BigInt::parse_bytes(value.as_bytes(), 10).unwrap_or_else(BigInt::zero)
+}
+
+fn pow10(exponent: u32) -> BigInt {
+    let mut value = BigInt::one();
+    for _ in 0..exponent {
+        value *= 10u8;
+    }
+    value
+}
+
+fn chernick_k_start(target_digits: i64) -> BigInt {
+    let digits = ((target_digits - 4) / 3).max(1) as u32;
+    pow10(digits.saturating_sub(1))
+}
+
+fn chunk_end_from(start: &BigInt, chunk_size: i64, step: i64) -> BigInt {
+    if chunk_size <= 1 {
+        return start.clone();
+    }
+    let step = BigInt::from(step);
+    let count = BigInt::from(chunk_size - 1);
+    start + step * count
+}
+
+fn chunk_ranges(
+    start: &BigInt,
+    end: &BigInt,
+    chunk_size: i64,
+    step: i64,
+) -> Vec<(String, String)> {
+    let mut ranges = Vec::new();
+    let step_big = BigInt::from(step);
+    let mut current = start.clone();
+    while &current <= end {
+        let chunk_end = chunk_end_from(&current, chunk_size, step);
+        let clamped = if &chunk_end > end {
+            end.clone()
+        } else {
+            chunk_end
+        };
+        ranges.push((current.to_string(), clamped.to_string()));
+        current = clamped + step_big.clone();
+    }
+    ranges
 }
 
 fn split_text(text: &str, parts: usize) -> Vec<String> {
@@ -872,6 +1448,9 @@ async fn ensure_demo_project(db: &mut tokio_postgres::Client) -> Result<Project,
         return Ok(project);
     }
 
+    let guid = uuid::Uuid::new_v4();
+    let storage_prefix = guid.to_string();
+
     let transaction = db.transaction().await.map_err(|err| {
         tracing::error!(error = %err, "start transaction failed");
         ServiceError::new(
@@ -883,9 +1462,12 @@ async fn ensure_demo_project(db: &mut tokio_postgres::Client) -> Result<Project,
 
     let project = db::insert_project(
         &transaction,
+        &guid,
         DEMO_PROJECT_NAME,
         &Some("Wordcount demo project".to_string()),
         &Option::<i64>::None,
+        true,
+        &storage_prefix,
     )
     .await
     .map_err(|err| {
@@ -917,6 +1499,69 @@ async fn ensure_demo_project(db: &mut tokio_postgres::Client) -> Result<Project,
     Ok(project)
 }
 
+async fn ensure_bpsw_project(db: &mut tokio_postgres::Client) -> Result<Project, ServiceError> {
+    if let Some(project) = db::select_project_by_name(db, BPSW_PROJECT_NAME)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+    {
+        return Ok(project);
+    }
+
+    let guid = uuid::Uuid::new_v4();
+    let storage_prefix = guid.to_string();
+    let transaction = db.transaction().await.map_err(|err| {
+        tracing::error!(error = %err, "start transaction failed");
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        )
+    })?;
+
+    let project = db::insert_project(
+        &transaction,
+        &guid,
+        BPSW_PROJECT_NAME,
+        &Some("BPSW Hunter project".to_string()),
+        &Option::<i64>::None,
+        false,
+        &storage_prefix,
+    )
+    .await
+    .map_err(|err| {
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            format!("{err}"),
+        )
+    })?;
+
+    if let Err(err) = db::create_project_schema(&transaction, &project).await {
+        tracing::error!(error = %err, "create schema failed");
+        return Err(ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        ));
+    }
+
+    transaction.commit().await.map_err(|err| {
+        tracing::error!(error = %err, "commit failed");
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        )
+    })?;
+
+    Ok(project)
+}
+
+fn hash_bytes(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
 async fn schema_name_for_project(
     db: &mut tokio_postgres::Client,
     project: &Project,
@@ -976,10 +1621,142 @@ for entry in payload.get("top_words", []):
         }
     });
 
-    db.execute(db::task_insert_sql(schema).as_str(), &[&"queued", &payload])
+    db.execute(
+        db::task_insert_sql(schema).as_str(),
+        &[&"queued", &"followup_report", &payload],
+    )
         .await
         .map_err(|err| format!("insert followup failed: {err}"))?;
     Ok(())
+}
+
+fn batch_to_single(policy_decision: &'static str, batch: TaskBatchResponse) -> TaskResponse {
+    let first = batch.tasks.first();
+    TaskResponse {
+        status: batch.status,
+        task_id: first
+            .map(|task| task.task_id.clone())
+            .unwrap_or_else(|| "".to_string()),
+        policy_decision,
+        granted_tasks: batch.granted_tasks,
+        reasons: batch.reasons,
+        payload: first.map(|task| task.payload.clone()),
+        project_id: first.map(|task| task.project_id),
+        blocked: batch.blocked,
+        blocked_reason: batch.blocked_reason,
+    }
+}
+
+async fn resolve_agent_status(
+    state: &AppState,
+    agent_uid: Option<&str>,
+) -> Result<(bool, Option<String>), ServiceError> {
+    let Some(agent_uid) = agent_uid else {
+        return Ok((false, None));
+    };
+    let agent_uid = parse_agent_uid(agent_uid)?;
+    let db = state.db.lock().await;
+    let agent = db::select_agent(&*db, &agent_uid)
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    Ok(agent
+        .map(|record| (record.blocked, record.blocked_reason))
+        .unwrap_or((false, None)))
+}
+
+fn parse_agent_uid(value: &str) -> Result<Uuid, ServiceError> {
+    Uuid::parse_str(value).map_err(|_| {
+        ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_uid",
+            "agent_uid must be a UUID".to_string(),
+        )
+    })
+}
+
+async fn fetch_tasks_batch(
+    db: &mut tokio_postgres::Client,
+    schema: &str,
+    project_id: i64,
+    allowed_task_types: Option<&Vec<String>>,
+    limit: u32,
+) -> Result<Vec<TaskAssignment>, ServiceError> {
+    let transaction = db.transaction().await.map_err(|_| {
+        ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            "database error".to_string(),
+        )
+    })?;
+
+    let mut tasks = Vec::new();
+    let limit = limit.max(1) as i64;
+    if let Some(allowed) = allowed_task_types {
+        let sql = format!(
+            "SELECT id, payload, task_type FROM {}.tasks \
+             WHERE status = 'queued' AND task_type = ANY($1) \
+             ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED",
+            schema
+        );
+        let rows = transaction
+            .query(sql.as_str(), &[allowed, &limit])
+            .await
+            .map_err(|err| {
+                ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err)
+            })?;
+        for row in rows {
+            tasks.push(TaskAssignment {
+                task_id: row.get::<_, i64>("id").to_string(),
+                payload: row.get("payload"),
+                project_id,
+                task_type: row.get("task_type"),
+            });
+        }
+    } else {
+        let sql = format!(
+            "SELECT id, payload, task_type FROM {}.tasks \
+             WHERE status = 'queued' \
+             ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED",
+            schema
+        );
+        let rows = transaction
+            .query(sql.as_str(), &[&limit])
+            .await
+            .map_err(|err| {
+                ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err)
+            })?;
+        for row in rows {
+            tasks.push(TaskAssignment {
+                task_id: row.get::<_, i64>("id").to_string(),
+                payload: row.get("payload"),
+                project_id,
+                task_type: row.get("task_type"),
+            });
+        }
+    }
+
+    if tasks.is_empty() {
+        let _ = transaction.commit().await;
+        return Ok(tasks);
+    }
+
+    let ids: Vec<i64> = tasks
+        .iter()
+        .filter_map(|task| task.task_id.parse::<i64>().ok())
+        .collect();
+    let update_sql = format!(
+        "UPDATE {}.tasks SET status = 'running', updated_at = NOW() WHERE id = ANY($1)",
+        schema
+    );
+    transaction
+        .execute(update_sql.as_str(), &[&ids])
+        .await
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    transaction.commit().await.map_err(|err| {
+        ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err.to_string())
+    })?;
+
+    Ok(tasks)
 }
 
 #[cfg(test)]

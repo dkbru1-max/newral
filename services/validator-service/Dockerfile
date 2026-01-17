@@ -1,4 +1,4 @@
-FROM rust:1.81-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 # Build the release binary.
 WORKDIR /app
 COPY services/common ./common

@@ -160,8 +160,35 @@ h3 {
   background: var(--accent-soft);
 }
 
+.breadcrumbs {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.breadcrumbs a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.breadcrumbs a:hover {
+  color: var(--ink);
+}
+
 .main {
   padding: 24px 48px 120px;
+}
+
+.footer {
+  margin-top: 32px;
+  padding: 16px 0;
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
 }
 
 .topbar {
@@ -173,7 +200,7 @@ h3 {
   position: sticky;
   top: 0;
   z-index: 5;
-  padding: 16px 0 12px;
+  padding: 16px 12px 12px;
   backdrop-filter: blur(10px);
 }
 
@@ -190,6 +217,17 @@ h3 {
 .topbar-actions {
   display: flex;
   gap: 12px;
+}
+
+.version-chip {
+  align-self: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .btn {
@@ -272,6 +310,10 @@ h3 {
   align-items: baseline;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.section {
+  scroll-margin-top: 120px;
 }
 
 .section-header p {
@@ -410,7 +452,7 @@ h3 {
 }
 
 .vision-card {
-  margin-top: 12px;
+  margin-top: 24px;
 }
 
 .card-grid {
@@ -603,6 +645,16 @@ th {
   border: 1px solid var(--line);
 }
 
+.link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
 .pill.ok,
 .pill.connected {
   background: rgba(31, 139, 76, 0.15);
@@ -649,6 +701,43 @@ th {
   gap: 12px;
   flex-wrap: wrap;
   margin-top: 12px;
+}
+
+.form-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.checkbox-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.form-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .filter-row {

@@ -1,11 +1,25 @@
+Update notes (v0.2.0)
+- Project isolation: GUID per project, separate Postgres schemas, MinIO prefixes.
+- BPSW workflow: script sync/start, hash verification, task types, real-range defaults.
+- Agent: EULA gate, batch tasks, preferences, metrics via sysinfo, local limits.
+- Portal: SPA navigation, breadcrumbs, BPSW controls, version display.
+- Builds: Rust 1.88 base images for aws-sdk compatibility.
+- Known gaps: BPSW DET pipeline, portal detail pages on mock data, agent CI workflow.
+
 Client Agent (MVP)
 
 Purpose
 The agent connects a volunteer device to the Newral scheduler. In MVP it:
 - Sends periodic heartbeats.
-- Requests a placeholder task.
-- Runs a sandbox-ready runner stub (sleep/echo).
+- Requests batch tasks and manages a local queue.
+- Executes Python tasks in a sandboxed workspace.
 - Submits a result.
+
+New in v0.2.0
+- EULA gating on first launch (no network activity until accepted).
+- Agent preferences per project/task type.
+- Hardware inventory + periodic metrics (sysinfo; GPU best-effort via nvidia-smi).
+- Local resource limits for CPU/RAM (GPU best-effort).
 
 Configuration
 The agent reads config from file and environment variables. Env vars override file settings.

@@ -1,3 +1,11 @@
+Update notes (v0.2.0)
+- Project isolation: GUID per project, separate Postgres schemas, MinIO prefixes.
+- BPSW workflow: script sync/start, hash verification, task types, real-range defaults.
+- Agent: EULA gate, batch tasks, preferences, metrics via sysinfo, local limits.
+- Portal: SPA navigation, breadcrumbs, BPSW controls, version display.
+- Builds: Rust 1.88 base images for aws-sdk compatibility.
+- Known gaps: BPSW DET pipeline, portal detail pages on mock data, agent CI workflow.
+
 Multi-Project Storage Strategy
 
 Overview
@@ -5,7 +13,10 @@ Newral stores shared metadata in the `public` schema and isolates project worklo
 
 Schema Layout
 - `public`: users, devices, projects, device_reputation, flags.
-- `prj_<id>_<name>`: tasks, task_results for each project.
+- `prj_<guid>`: tasks, task_results for each project (GUID-based schema names).
+
+Object storage
+- MinIO uses a shared bucket with per-project prefixes (`storage_prefix`).
 
 Why schemas (MVP)
 Pros

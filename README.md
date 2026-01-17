@@ -5,6 +5,7 @@
 - `services/*/src`: split into `app`, `handlers`, `service`, `db`, `models`, `state`.
 - `client/agent`: Rust agent with sandbox execution and GUI.
 - `docs/REFACTORING_NOTES.md`: rationale for refactor decisions.
+- `scripts/bpsw`: BPSW worker script used for distributed tasks.
 
 ## Local dev
 1) Copy `.env.example` to `.env` and set passwords.
@@ -55,8 +56,12 @@ Scheduler service:
 ```bash
 curl -sS http://localhost:8082/healthz
 curl -sS http://localhost:8082/readyz
-curl -sS -X POST http://localhost:8082/v1/tasks/request -H 'Content-Type: application/json' -d '{"node_id":"node-1"}'
+curl -sS -X POST http://localhost:8082/v1/tasks/request_batch -H 'Content-Type: application/json' -d '{"agent_uid":"00000000-0000-0000-0000-000000000000","max":3}'
 curl -sS -X POST http://localhost:8082/v1/tasks/submit -H 'Content-Type: application/json' -d '{"task_id":"task-0000","result":"ok"}'
+curl -sS -X POST http://localhost:8082/v1/agents/register -H 'Content-Type: application/json' -d '{"agent_uid":"00000000-0000-0000-0000-000000000000","hardware":{"cpu_model":"demo","ram_total_mb":1024}}'
+curl -sS -X POST http://localhost:8082/v1/agents/metrics -H 'Content-Type: application/json' -d '{"agent_uid":"00000000-0000-0000-0000-000000000000","metrics":{"cpu_load":12.5}}'
+curl -sS -X POST http://localhost:8082/v1/projects/bpsw/scripts/sync
+curl -sS -X POST http://localhost:8082/v1/projects/bpsw/start -H 'Content-Type: application/json' -d '{"chunk_size":10000}'
 ```
 
 Validator service:
@@ -74,29 +79,4 @@ curl -sS -X POST http://localhost:8084/v1/event -H 'Content-Type: application/js
 ```
 
 ## Windows agent build (GitHub Actions)
-Release build (recommended):
-1) Create a tag locally:
-```bash
-git tag agent-v0.1.0
-git push origin agent-v0.1.0
-```
-2) Wait for Actions run to finish.
-3) Download from GitHub Releases: `newral-agent.exe` or `newral-agent-windows.zip`.
-
-Manual build via Actions artifacts:
-1) GitHub -> Actions -> Build Windows Agent -> Run workflow.
-2) Download artifact `newral-agent-windows` from the completed run.
-
-## Как собрать Windows Agent через GitHub Actions
-Вариант A (релиз по тегу):
-1) Создайте тег в локальном репозитории:
-```bash
-git tag agent-v0.1.0
-git push origin agent-v0.1.0
-```
-2) Дождитесь завершения workflow `Build Windows Agent (Release)`.
-3) Скачайте `newral-agent-windows.zip` из GitHub Releases.
-
-Вариант B (ручной запуск):
-1) GitHub -> Actions -> `Build Windows Agent (Release)` -> Run workflow.
-2) Скачайте артефакт `newral-agent-windows` из завершенного запуска.
+Planned: CI workflow for Windows/Linux agent builds is not implemented yet.

@@ -7,7 +7,9 @@ use axum::{
 use std::{convert::Infallible, time::Duration};
 
 use crate::models::{
-    CreateProjectRequest, DemoStartParams, HeartbeatRequest, TaskRequest, TaskSubmitRequest,
+    AgentMetricsRequest, AgentPreferencesRequest, AgentRegisterRequest, CreateProjectRequest,
+    BpswStartRequest, DemoStartParams, HeartbeatRequest, TaskBatchRequest, TaskRequest,
+    TaskSubmitRequest,
 };
 use crate::service;
 use crate::state::AppState;
@@ -74,11 +76,51 @@ pub async fn request_task(
     }
 }
 
+pub async fn request_task_batch(
+    State(state): State<AppState>,
+    Json(payload): Json<TaskBatchRequest>,
+) -> impl IntoResponse {
+    match service::request_task_batch(&state, payload).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
 pub async fn submit_task(
     State(state): State<AppState>,
     Json(payload): Json<TaskSubmitRequest>,
 ) -> impl IntoResponse {
     match service::submit_task(&state, payload).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn register_agent(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentRegisterRequest>,
+) -> impl IntoResponse {
+    match service::register_agent(&state, payload).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn update_agent_metrics(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentMetricsRequest>,
+) -> impl IntoResponse {
+    match service::update_agent_metrics(&state, payload).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn update_agent_preferences(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentPreferencesRequest>,
+) -> impl IntoResponse {
+    match service::update_agent_preferences(&state, payload).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => (err.status, Json(err.body)).into_response(),
     }
@@ -126,6 +168,23 @@ pub async fn start_demo_wordcount(
     Query(params): Query<DemoStartParams>,
 ) -> impl IntoResponse {
     match service::start_demo_wordcount(&state, params).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn start_bpsw_project(
+    State(state): State<AppState>,
+    Json(payload): Json<BpswStartRequest>,
+) -> impl IntoResponse {
+    match service::start_bpsw_project(&state, payload).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (err.status, Json(err.body)).into_response(),
+    }
+}
+
+pub async fn sync_bpsw_scripts(State(state): State<AppState>) -> impl IntoResponse {
+    match service::sync_bpsw_scripts(&state).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => (err.status, Json(err.body)).into_response(),
     }

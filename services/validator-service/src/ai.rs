@@ -1,7 +1,11 @@
 use crate::models::{ServerSandboxResult, TaskPayload};
 
 pub fn inspect(payload: &TaskPayload, result: &ServerSandboxResult) -> Option<String> {
-    let Some(script) = payload.script.as_deref() else {
+    let script = if let Some(script) = payload.script.as_deref() {
+        script
+    } else if payload.script_url.is_some() {
+        ""
+    } else {
         return Some("missing_script".to_string());
     };
     let risky_tokens = [

@@ -1,4 +1,5 @@
 use tokio_postgres::{Client, Error, GenericClient};
+use uuid::Uuid;
 
 use crate::models::TaskPayload;
 
@@ -8,8 +9,8 @@ const SQL_UPSERT_REPUTATION: &str = "INSERT INTO device_reputation (device_id, s
 VALUES ($1, $2) \
 ON CONFLICT (device_id) DO UPDATE SET score = device_reputation.score + $2, updated_at = NOW() \
 RETURNING score";
-const SQL_SELECT_PROJECT: &str = "SELECT id, name FROM projects WHERE id = $1";
-const SQL_PROJECT_SCHEMA_NAME: &str = "SELECT project_schema_name($1, $2)";
+const SQL_SELECT_PROJECT: &str = "SELECT id, name, guid FROM projects WHERE id = $1";
+const SQL_PROJECT_SCHEMA_NAME: &str = "SELECT project_schema_name($1, $2, $3)";
 
 fn task_payload_select_sql(schema: &str) -> String {
     format!("SELECT payload FROM {}.tasks WHERE id = $1", schema)
@@ -38,8 +39,9 @@ pub async fn resolve_project_schema(db: &mut Client, project_id: i64) -> Result<
         return Err("project not found".to_string());
     };
     let name: String = row.get("name");
+    let guid: Uuid = row.get("guid");
     let schema_row = db
-        .query_one(SQL_PROJECT_SCHEMA_NAME, &[&project_id, &name])
+        .query_one(SQL_PROJECT_SCHEMA_NAME, &[&project_id, &name, &guid])
         .await
         .map_err(|err| format!("project schema failed: {err}"))?;
     let schema: String = schema_row.get(0);

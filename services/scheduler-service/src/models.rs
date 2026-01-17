@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct TaskRequest {
     pub node_id: Option<String>,
+    pub agent_uid: Option<String>,
     pub requested_tasks: Option<u32>,
     pub proposal_source: Option<String>,
+    pub project_id: Option<i64>,
+    pub allowed_task_types: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -16,6 +20,36 @@ pub struct TaskResponse {
     pub reasons: Vec<String>,
     pub payload: Option<serde_json::Value>,
     pub project_id: Option<i64>,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct TaskBatchRequest {
+    pub agent_uid: String,
+    pub requested_tasks: Option<u32>,
+    pub proposal_source: Option<String>,
+    pub project_id: Option<i64>,
+    pub allowed_task_types: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct TaskBatchResponse {
+    pub status: &'static str,
+    pub policy_decision: &'static str,
+    pub granted_tasks: u32,
+    pub reasons: Vec<String>,
+    pub tasks: Vec<TaskAssignment>,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct TaskAssignment {
+    pub task_id: String,
+    pub payload: serde_json::Value,
+    pub project_id: i64,
+    pub task_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +73,7 @@ pub struct LiveSummary {
     pub tasks: Vec<TaskSummary>,
     pub queue: TaskQueueSummary,
     pub load: LoadSummary,
+    pub version: String,
 }
 
 #[derive(Serialize)]
@@ -76,6 +111,60 @@ pub struct HeartbeatRequest {
     pub node_id: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct ResourceLimits {
+    pub cpu_percent: Option<f32>,
+    pub gpu_percent: Option<f32>,
+    pub ram_percent: Option<f32>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ProjectPreference {
+    pub project_id: i64,
+    pub allowed_task_types: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AgentRegisterRequest {
+    pub agent_uid: String,
+    pub display_name: Option<String>,
+    pub hardware: serde_json::Value,
+    pub limits: Option<ResourceLimits>,
+    pub preferences: Option<Vec<ProjectPreference>>,
+}
+
+#[derive(Serialize)]
+pub struct AgentRegisterResponse {
+    pub status: &'static str,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AgentMetricsRequest {
+    pub agent_uid: String,
+    pub metrics: AgentMetrics,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct AgentMetrics {
+    pub cpu_load: Option<f32>,
+    pub ram_used_mb: Option<f32>,
+    pub ram_total_mb: Option<f32>,
+    pub gpu_load: Option<f32>,
+    pub gpu_mem_used_mb: Option<f32>,
+    pub net_rx_bytes: Option<i64>,
+    pub net_tx_bytes: Option<i64>,
+    pub disk_read_bytes: Option<i64>,
+    pub disk_write_bytes: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct AgentPreferencesRequest {
+    pub agent_uid: String,
+    pub preferences: Vec<ProjectPreference>,
+}
+
 #[derive(Serialize)]
 pub struct HeartbeatResponse {
     pub status: &'static str,
@@ -91,9 +180,12 @@ pub struct ErrorResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct Project {
     pub id: i64,
+    pub guid: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub owner_id: Option<i64>,
+    pub is_demo: bool,
+    pub storage_prefix: String,
     pub created_at: String,
 }
 
@@ -107,9 +199,12 @@ pub struct CreateProjectRequest {
 #[derive(Serialize)]
 pub struct ProjectResponse {
     pub id: i64,
+    pub guid: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub owner_id: Option<i64>,
+    pub is_demo: bool,
+    pub storage_prefix: String,
     pub created_at: String,
 }
 
@@ -122,6 +217,35 @@ pub struct CreateProjectResponse {
 #[derive(Deserialize)]
 pub struct DemoStartParams {
     pub parts: Option<usize>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+pub enum BpswBound {
+    Int(i64),
+    Str(String),
+}
+
+#[derive(Deserialize)]
+pub struct BpswStartRequest {
+    pub start: Option<BpswBound>,
+    pub end: Option<BpswBound>,
+    pub chunk_size: Option<i64>,
+    pub task_types: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct BpswStartResponse {
+    pub status: &'static str,
+    pub project_id: i64,
+    pub total_tasks: usize,
+}
+
+#[derive(Serialize)]
+pub struct BpswScriptSyncResponse {
+    pub status: &'static str,
+    pub project_id: i64,
+    pub task_types: Vec<String>,
 }
 
 #[derive(Serialize)]

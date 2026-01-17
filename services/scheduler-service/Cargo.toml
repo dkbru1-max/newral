@@ -10,6 +10,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
-tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-uuid-1"] }
 tracing = "0.1"
+aws-config = "1"
+aws-sdk-s3 = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+num-bigint = "0.4"
+num-traits = "0.2"
 newral-common = { path = "../common" }

@@ -3,6 +3,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_postgres::Client;
 
 use crate::policy::PolicyEngine;
+use crate::storage::StorageClient;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -12,6 +13,7 @@ pub struct AppState {
     pub updates: broadcast::Sender<()>,
     pub stream_interval: Duration,
     pub heartbeat_ttl: Duration,
+    pub storage: Option<StorageClient>,
 }
 
 #[derive(Clone)]

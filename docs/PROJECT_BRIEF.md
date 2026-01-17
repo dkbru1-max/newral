@@ -1,3 +1,11 @@
+Implementation status (v0.2.0)
+- Project isolation: GUID per project, separate Postgres schemas, MinIO per-project prefixes.
+- Scheduler: demo wordcount, live SSE summary, policy gating, BPSW script sync/start with task types.
+- Agent: GUI, EULA gate, batch task requests, preferences, metrics, local CPU/RAM limits (GPU best effort).
+- Validator: server sandbox recheck + AI heuristics.
+- Portal: SPA navigation with breadcrumbs and BPSW controls (detail pages still on mock data).
+- Compose: Rust builders on 1.88 to satisfy aws-sdk dependencies.
+
 Russian version
 Newral: Архитектура платформы распределённых вычислений нового поколения
 Цели и описание проекта

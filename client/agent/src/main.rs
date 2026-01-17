@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "gui", windows_subsystem = "windows")]
 
+use rand::Rng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,6 +15,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use sysinfo::{CpuExt, DisksExt, NetworksExt, System, SystemExt};
 use tokio::{
     io::AsyncReadExt,
     process::Command,
@@ -21,29 +23,72 @@ use tokio::{
     time::sleep,
 };
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use uuid::Uuid;
 
+const EULA_TEXT: &str = r#"End User License Agreement (EULA) for Newral Agent
+
+Data Collection: By using the Newral Agent software ("the Software"), you acknowledge and consent that the Software will collect and periodically transmit technical information about your computer system to the Newral central server. This includes, but is not limited to, your IP address, CPU and GPU specifications, amount of RAM, disk capacity and usage, and other hardware metrics necessary for the operation of the distributed computing platform. No personal files or sensitive personal data will be accessed or transmitted.
+
+Purpose of Data: The collected information is used to monitor node performance, ensure the integrity and efficiency of distributed computations, and improve the overall platform. It may also be used to calculate rewards or reputation scores for your contributions.
+
+Privacy and Use of Data: All collected data is used solely within the Newral platform. It will not be shared with unauthorized third parties. The data is handled in accordance with applicable privacy laws and is used only for operational analytics, security verification, and platform research and improvements.
+
+Software Updates: This Software may automatically download and install updates to improve its functionality and security. By using the Software, you agree that such updates are part of the Software's operation. The EULA terms may be updated with such releases, and continued use of the Software constitutes acceptance of the updated terms.
+
+User Obligations: You agree to use the Software only for its intended purpose as part of the Newral distributed computing platform. You will not attempt to reverse engineer, tamper with, or misuse the Software or the data it processes.
+
+Termination: You may stop using the Software at any time. The Newral team reserves the right to terminate your access to the platform if you violate the terms of this EULA.
+
+Disclaimer of Warranty: The Software is provided "as is" without warranty of any kind. The Newral developers disclaim all warranties, express or implied, including but not limited to the warranties of merchantability and fitness for a particular purpose. You assume all risks associated with using the Software.
+
+Limitation of Liability: In no event shall the Newral platform or its developers be liable for any damages or losses arising from the use of or inability to use the Software, even if advised of the possibility of such damages.
+
+Acceptance: By clicking "Accept" and using the Software, you indicate that you have read, understood, and agree to all the terms and conditions of this EULA. If you do not agree, do not use the Software.
+"#;
 #[derive(Debug, Clone)]
 struct AgentConfig {
     node_id: String,
+    display_name: Option<String>,
     scheduler_url: String,
     heartbeat_interval: Duration,
     poll_interval: Duration,
     runner_sleep: Duration,
+    batch_min: u32,
+    batch_max: u32,
+    batch_delay_min: Duration,
+    batch_delay_max: Duration,
+    metrics_interval: Duration,
     sandbox: SandboxConfig,
+    eula_accepted: bool,
+    project_id: Option<i64>,
+    allowed_task_types: Vec<String>,
+    limits: ResourceLimits,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 struct FileConfig {
     node_id: Option<String>,
+    display_name: Option<String>,
     scheduler_url: Option<String>,
     heartbeat_interval_secs: Option<u64>,
     poll_interval_secs: Option<u64>,
     runner_sleep_secs: Option<u64>,
+    batch_min: Option<u32>,
+    batch_max: Option<u32>,
+    batch_delay_min_secs: Option<u64>,
+    batch_delay_max_secs: Option<u64>,
+    metrics_interval_secs: Option<u64>,
     python_bin: Option<String>,
     timeout_secs: Option<u64>,
     workspace_limit_mb: Option<u64>,
     stdout_limit_mb: Option<u64>,
     stderr_limit_mb: Option<u64>,
+    eula_accepted: Option<bool>,
+    project_id: Option<i64>,
+    allowed_task_types: Option<Vec<String>>,
+    cpu_limit_percent: Option<f32>,
+    gpu_limit_percent: Option<f32>,
+    ram_limit_percent: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -62,8 +107,11 @@ struct HeartbeatRequest<'a> {
 #[derive(Serialize)]
 struct TaskRequest<'a> {
     node_id: &'a str,
+    agent_uid: &'a str,
     requested_tasks: u32,
     proposal_source: &'a str,
+    project_id: Option<i64>,
+    allowed_task_types: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -76,6 +124,28 @@ struct TaskResponse {
     reasons: Vec<String>,
     payload: Option<TaskPayload>,
     project_id: Option<i64>,
+    blocked: Option<bool>,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TaskBatchRequest<'a> {
+    agent_uid: &'a str,
+    requested_tasks: u32,
+    proposal_source: &'a str,
+    project_id: Option<i64>,
+    allowed_task_types: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct TaskBatchResponse {
+    status: String,
+    policy_decision: String,
+    granted_tasks: u32,
+    reasons: Vec<String>,
+    tasks: Vec<TaskAssignment>,
+    blocked: Option<bool>,
+    blocked_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -91,18 +161,72 @@ struct TaskSubmitResponse {
     status: String,
 }
 
+#[derive(Deserialize)]
+struct TaskAssignment {
+    task_id: String,
+    payload: TaskPayload,
+    project_id: i64,
+    task_type: Option<String>,
+}
+
 #[derive(Debug)]
 struct Task {
     id: String,
     payload: TaskPayload,
     project_id: Option<i64>,
+    task_type: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentRegisterRequest<'a> {
+    agent_uid: &'a str,
+    display_name: Option<&'a str>,
+    hardware: serde_json::Value,
+    limits: ResourceLimits,
+    preferences: Vec<ProjectPreference>,
+}
+
+#[derive(Deserialize)]
+struct AgentRegisterResponse {
+    status: String,
+    blocked: bool,
+    blocked_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentMetricsRequest<'a> {
+    agent_uid: &'a str,
+    metrics: AgentMetrics,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct AgentMetrics {
+    cpu_load: Option<f32>,
+    ram_used_mb: Option<f32>,
+    ram_total_mb: Option<f32>,
+    gpu_load: Option<f32>,
+    gpu_mem_used_mb: Option<f32>,
+    net_rx_bytes: Option<i64>,
+    net_tx_bytes: Option<i64>,
+    disk_read_bytes: Option<i64>,
+    disk_write_bytes: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct ProjectPreference {
+    project_id: i64,
+    allowed_task_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct TaskPayload {
     kind: Option<String>,
     script: Option<String>,
+    script_url: Option<String>,
+    script_sha256: Option<String>,
+    args: Option<Vec<String>>,
     inputs: Option<HashMap<String, String>>,
+    task_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +257,19 @@ struct SandboxResult {
     engine: String,
     node_id: String,
     task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ResourceLimits {
+    cpu_percent: Option<f32>,
+    gpu_percent: Option<f32>,
+    ram_percent: Option<f32>,
+}
+
+impl ResourceLimits {
+    fn any_set(&self) -> bool {
+        self.cpu_percent.is_some() || self.gpu_percent.is_some() || self.ram_percent.is_some()
+    }
 }
 
 #[derive(Clone)]
@@ -261,6 +398,9 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
 #[derive(Default, Clone)]
 struct AgentRuntimeState {
     connected: bool,
+    paused: bool,
+    blocked: bool,
+    blocked_reason: Option<String>,
     current_task: Option<String>,
     last_result: Option<String>,
     last_error: Option<String>,
@@ -333,6 +473,29 @@ fn run_service_mode() {
 }
 
 async fn run_agent_until_stop(agent: Agent) {
+    if !agent.config.eula_accepted {
+        tracing::error!("EULA not accepted; exiting");
+        agent.log(LogLevel::Error, "EULA not accepted. Please accept in settings.");
+        return;
+    }
+
+    match agent.register().await {
+        Ok(response) => {
+            if response.blocked {
+                agent.log(LogLevel::Error, "Agent is blocked by server");
+                agent
+                    .set_blocked(true, response.blocked_reason)
+                    .await;
+                return;
+            }
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "registration failed");
+            agent.log(LogLevel::Error, "Agent registration failed");
+            return;
+        }
+    }
+
     let stop = StopSignal::new();
     let handles = spawn_agent(agent, stop.clone());
 
@@ -395,6 +558,37 @@ impl Agent {
         }
     }
 
+    async fn set_paused(&self, paused: bool) {
+        if let Some(runtime) = &self.runtime {
+            let mut status = runtime.status.lock().await;
+            status.paused = paused;
+        }
+    }
+
+    async fn set_blocked(&self, blocked: bool, reason: Option<String>) {
+        if let Some(runtime) = &self.runtime {
+            let mut status = runtime.status.lock().await;
+            status.blocked = blocked;
+            status.blocked_reason = reason;
+        }
+    }
+
+    async fn is_paused(&self) -> bool {
+        if let Some(runtime) = &self.runtime {
+            let status = runtime.status.lock().await;
+            return status.paused;
+        }
+        false
+    }
+
+    async fn is_blocked(&self) -> bool {
+        if let Some(runtime) = &self.runtime {
+            let status = runtime.status.lock().await;
+            return status.blocked;
+        }
+        false
+    }
+
     async fn set_current_task(&self, task_id: Option<String>) {
         if let Some(runtime) = &self.runtime {
             let mut status = runtime.status.lock().await;
@@ -454,51 +648,170 @@ impl Agent {
         Ok(())
     }
 
-    async fn run_loop(&self, stop: StopSignal) {
+    async fn register(&self) -> Result<AgentRegisterResponse, reqwest::Error> {
+        let url = format!("{}/v1/agents/register", self.config.scheduler_url);
+        let hardware = collect_hardware_info();
+        let preferences = if let Some(project_id) = self.config.project_id {
+            vec![ProjectPreference {
+                project_id,
+                allowed_task_types: self.config.allowed_task_types.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let response = self
+            .client
+            .post(url)
+            .json(&AgentRegisterRequest {
+                agent_uid: &self.config.node_id,
+                display_name: self.config.display_name.as_deref(),
+                hardware,
+                limits: self.config.limits.clone(),
+                preferences,
+            })
+            .send()
+            .await?;
+        response.json().await
+    }
+
+    async fn metrics_loop(&self, stop: StopSignal) {
+        let mut system = System::new_all();
         loop {
             if stop.stopped() {
                 break;
             }
-            match self.request_task().await {
-                Ok(Some(task)) => {
-                    self.set_current_task(Some(task.id.clone())).await;
-                    self.log(LogLevel::Info, &format!("Task start {}", task.id));
-                    // Runner abstracts future sandboxed execution.
-                    let result = self
-                        .runner
-                        .run(
-                            &task,
-                            &self.config.sandbox,
-                            self.config.node_id.as_str(),
-                            self.config.runner_sleep,
-                        )
-                        .await;
-                    if result.starts_with("error:") {
-                        self.log(LogLevel::Error, &format!("Task failed {}", task.id));
-                        self.set_last_error(Some(result.clone())).await;
-                    } else {
-                        self.log(LogLevel::Success, &format!("Task done {}", task.id));
-                    }
-                    if let Err(err) = self.submit_result(&task, &result).await {
-                        tracing::warn!(error = %err, "submit failed");
-                        self.log(LogLevel::Warn, "Result submit failed");
-                        self.set_last_error(Some(format!("submit: {err}"))).await;
-                    } else {
-                        self.set_last_result(Some(result.clone())).await;
-                    }
-                    self.set_current_task(None).await;
+            let metrics = collect_metrics(&mut system);
+            let url = format!("{}/v1/agents/metrics", self.config.scheduler_url);
+            let response = self
+                .client
+                .post(url)
+                .json(&AgentMetricsRequest {
+                    agent_uid: &self.config.node_id,
+                    metrics,
+                })
+                .send()
+                .await;
+            if let Err(err) = response {
+                tracing::warn!(error = %err, "metrics send failed");
+            }
+            if stop.sleep_or_stop(self.config.metrics_interval).await {
+                break;
+            }
+        }
+    }
+
+    async fn throttle_until_within_limits(&self, stop: StopSignal) {
+        if !self.config.limits.any_set() {
+            return;
+        }
+        let mut system = System::new_all();
+        let mut warned_gpu = false;
+        loop {
+            if stop.stopped() || self.is_paused().await {
+                break;
+            }
+            let metrics = collect_metrics(&mut system);
+            if self.config.limits.gpu_percent.is_some() && metrics.gpu_load.is_none() && !warned_gpu
+            {
+                self.log(
+                    LogLevel::Warn,
+                    "GPU limit configured but GPU metrics unavailable",
+                );
+                warned_gpu = true;
+            }
+            let exceeded = exceeded_limits(&metrics, &self.config.limits);
+            if exceeded.is_empty() {
+                break;
+            }
+            self.log(
+                LogLevel::Warn,
+                &format!("Resource limits reached: {}", exceeded.join(", ")),
+            );
+            if stop.sleep_or_stop(Duration::from_secs(2)).await {
+                break;
+            }
+        }
+    }
+
+    async fn run_loop(&self, stop: StopSignal) {
+        let mut queue: VecDeque<Task> = VecDeque::new();
+        let mut rng = rand::thread_rng();
+        loop {
+            if stop.stopped() {
+                break;
+            }
+            if self.is_blocked().await {
+                self.log(LogLevel::Error, "Agent blocked by server");
+                break;
+            }
+            if self.is_paused().await {
+                if stop.sleep_or_stop(Duration::from_secs(2)).await {
+                    break;
                 }
-                Ok(None) => {
-                    tracing::debug!("no task available");
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "task request failed");
-                    self.log(LogLevel::Warn, "Task request failed");
-                    self.set_last_error(Some(format!("request: {err}"))).await;
+                continue;
+            }
+
+            if queue.is_empty() {
+                match self.request_tasks_batch().await {
+                    Ok(Some(tasks)) => {
+                        for task in tasks {
+                            queue.push_back(task);
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!("no tasks available");
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "task request failed");
+                        self.log(LogLevel::Warn, "Task request failed");
+                        self.set_last_error(Some(format!("request: {err}"))).await;
+                    }
                 }
             }
 
-            if stop.sleep_or_stop(self.config.poll_interval).await {
+            if let Some(task) = queue.pop_front() {
+                self.throttle_until_within_limits(stop.clone()).await;
+                self.set_current_task(Some(task.id.clone())).await;
+                self.log(LogLevel::Info, &format!("Task start {}", task.id));
+                // Runner abstracts future sandboxed execution.
+                let result = self
+                    .runner
+                    .run(
+                        &task,
+                        &self.config.sandbox,
+                        &self.config.limits,
+                        self.config.node_id.as_str(),
+                        self.config.runner_sleep,
+                    )
+                    .await;
+                if result.starts_with("error:") {
+                    self.log(LogLevel::Error, &format!("Task failed {}", task.id));
+                    self.set_last_error(Some(result.clone())).await;
+                } else {
+                    self.log(LogLevel::Success, &format!("Task done {}", task.id));
+                }
+                if let Err(err) = self.submit_result(&task, &result).await {
+                    tracing::warn!(error = %err, "submit failed");
+                    self.log(LogLevel::Warn, "Result submit failed");
+                    self.set_last_error(Some(format!("submit: {err}"))).await;
+                } else {
+                    self.set_last_result(Some(result.clone())).await;
+                }
+                self.set_current_task(None).await;
+
+                if queue.is_empty() {
+                    let min_delay = self.config.batch_delay_min.as_secs();
+                    let max_delay = self.config.batch_delay_max.as_secs();
+                    let delay = if min_delay >= max_delay {
+                        min_delay
+                    } else {
+                        rng.gen_range(min_delay..=max_delay)
+                    };
+                    if stop.sleep_or_stop(Duration::from_secs(delay)).await {
+                        break;
+                    }
+                }
+            } else if stop.sleep_or_stop(self.config.poll_interval).await {
                 break;
             }
         }
@@ -511,8 +824,11 @@ impl Agent {
             .post(url)
             .json(&TaskRequest {
                 node_id: &self.config.node_id,
+                agent_uid: &self.config.node_id,
                 requested_tasks: 1,
                 proposal_source: "system",
+                project_id: self.config.project_id,
+                allowed_task_types: self.config.allowed_task_types.clone(),
             })
             .send()
             .await?;
@@ -531,12 +847,71 @@ impl Agent {
             tracing::info!(reasons = ?body.reasons, "policy denied or limited to zero");
             return Ok(None);
         }
+        if body.blocked.unwrap_or(false) {
+            self.set_blocked(true, body.blocked_reason).await;
+            return Ok(None);
+        }
 
         Ok(Some(Task {
             id: body.task_id,
             payload: body.payload.unwrap_or_default(),
             project_id: body.project_id,
+            task_type: None,
         }))
+    }
+
+    async fn request_tasks_batch(&self) -> Result<Option<Vec<Task>>, reqwest::Error> {
+        let url = format!("{}/v1/tasks/request_batch", self.config.scheduler_url);
+        let min_batch = self.config.batch_min.max(1);
+        let max_batch = self.config.batch_max.max(min_batch);
+        let mut rng = rand::thread_rng();
+        let requested_tasks = if min_batch == max_batch {
+            min_batch
+        } else {
+            rng.gen_range(min_batch..=max_batch)
+        };
+        let response = self
+            .client
+            .post(url)
+            .json(&TaskBatchRequest {
+                agent_uid: &self.config.node_id,
+                requested_tasks,
+                proposal_source: "system",
+                project_id: self.config.project_id,
+                allowed_task_types: self.config.allowed_task_types.clone(),
+            })
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            tracing::warn!(
+                status = response.status().as_u16(),
+                "scheduler rejected batch request"
+            );
+            return Ok(None);
+        }
+
+        let body: TaskBatchResponse = response.json().await?;
+        if body.blocked.unwrap_or(false) {
+            self.set_blocked(true, body.blocked_reason).await;
+            return Ok(None);
+        }
+        if body.policy_decision == "deny" || body.granted_tasks == 0 || body.tasks.is_empty() {
+            tracing::info!(reasons = ?body.reasons, "batch denied or empty");
+            return Ok(None);
+        }
+
+        let tasks = body
+            .tasks
+            .into_iter()
+            .map(|task| Task {
+                id: task.task_id,
+                payload: task.payload,
+                project_id: Some(task.project_id),
+                task_type: task.task_type,
+            })
+            .collect();
+        Ok(Some(tasks))
     }
 
     async fn submit_result(&self, task: &Task, result: &str) -> Result<(), reqwest::Error> {
@@ -571,12 +946,18 @@ fn spawn_agent(agent: Agent, stop: StopSignal) -> Vec<tokio::task::JoinHandle<()
         heartbeat_agent.heartbeat_loop(heartbeat_stop).await;
     });
 
+    let metrics_agent = agent.clone();
+    let metrics_stop = stop.clone();
+    let metrics_handle = tokio::spawn(async move {
+        metrics_agent.metrics_loop(metrics_stop).await;
+    });
+
     let run_stop = stop.clone();
     let run_handle = tokio::spawn(async move {
         agent.run_loop(run_stop).await;
     });
 
-    vec![heartbeat_handle, run_handle]
+    vec![heartbeat_handle, metrics_handle, run_handle]
 }
 
 #[allow(dead_code)]
@@ -586,6 +967,7 @@ trait TaskRunner {
         &'a self,
         task: &'a Task,
         sandbox: &'a SandboxConfig,
+        limits: &'a ResourceLimits,
         node_id: &'a str,
         sleep_duration: Duration,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>;
@@ -602,6 +984,7 @@ impl TaskRunner for SandboxRunner {
         &'a self,
         task: &'a Task,
         sandbox: &'a SandboxConfig,
+        limits: &'a ResourceLimits,
         node_id: &'a str,
         sleep_duration: Duration,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
@@ -609,7 +992,7 @@ impl TaskRunner for SandboxRunner {
             // Dispatch by task type to keep runner extensible.
             let kind = task.payload.kind.as_deref().unwrap_or("sleep");
             match kind {
-                "python_script" => run_python_task(task, sandbox, node_id).await,
+                "python_script" => run_python_task(task, sandbox, limits, node_id).await,
                 _ => run_sleep_task(task, sleep_duration, node_id).await,
             }
         })
@@ -654,7 +1037,12 @@ async fn run_sleep_task(task: &Task, sleep_duration: Duration, node_id: &str) ->
     serde_json::to_string(&result).unwrap_or_else(|_| "ok".to_string())
 }
 
-async fn run_python_task(task: &Task, sandbox: &SandboxConfig, node_id: &str) -> String {
+async fn run_python_task(
+    task: &Task,
+    sandbox: &SandboxConfig,
+    limits: &ResourceLimits,
+    node_id: &str,
+) -> String {
     // Execute a python script inside a workspace with MVP safety limits.
     tracing::info!(
         task_id = %task.id,
@@ -662,10 +1050,11 @@ async fn run_python_task(task: &Task, sandbox: &SandboxConfig, node_id: &str) ->
         "running python task"
     );
 
-    let Some(script) = task.payload.script.as_deref() else {
-        return "error: missing script".to_string();
+    let script_bytes = match resolve_script_bytes(&task.payload).await {
+        Ok(bytes) => bytes,
+        Err(err) => return format!("error: {err}"),
     };
-    let script_hash = hash_bytes(script.as_bytes());
+    let script_hash = hash_bytes(script_bytes.as_slice());
 
     let workspace = match create_workspace(task.id.as_str()) {
         Ok(path) => path,
@@ -676,7 +1065,7 @@ async fn run_python_task(task: &Task, sandbox: &SandboxConfig, node_id: &str) ->
         return format!("error: {err}");
     }
 
-    if let Err(err) = write_script(&workspace, script) {
+    if let Err(err) = write_script(&workspace, script_bytes.as_slice()) {
         return format!("error: {err}");
     }
 
@@ -684,7 +1073,8 @@ async fn run_python_task(task: &Task, sandbox: &SandboxConfig, node_id: &str) ->
         return format!("error: {err}");
     }
 
-    let (result, workspace_bytes, files_written) = match execute_python(&workspace, sandbox).await {
+    let (result, workspace_bytes, files_written) =
+        match execute_python(&workspace, sandbox, limits, task.payload.args.as_ref()).await {
         Ok(output) => (output, dir_size(&workspace), count_files(&workspace)),
         Err(err) => {
             let now = SystemTime::now();
@@ -743,6 +1133,37 @@ async fn run_python_task(task: &Task, sandbox: &SandboxConfig, node_id: &str) ->
     serde_json::to_string(&payload).unwrap_or_else(|_| "error".to_string())
 }
 
+async fn resolve_script_bytes(payload: &TaskPayload) -> Result<Vec<u8>, String> {
+    if let Some(script) = payload.script.as_deref() {
+        return Ok(script.as_bytes().to_vec());
+    }
+    if let Some(url) = payload.script_url.as_deref() {
+        let bytes = download_script(url).await?;
+        if let Some(expected) = payload.script_sha256.as_deref() {
+            let actual = hash_bytes(bytes.as_slice());
+            if actual != expected {
+                return Err("script hash mismatch".to_string());
+            }
+        }
+        return Ok(bytes);
+    }
+    Err("missing script".to_string())
+}
+
+async fn download_script(url: &str) -> Result<Vec<u8>, String> {
+    let response = reqwest::get(url)
+        .await
+        .map_err(|err| format!("download script: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("download script failed: {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("read script bytes: {err}"))?;
+    Ok(bytes.to_vec())
+}
+
 fn create_workspace(task_id: &str) -> Result<PathBuf, String> {
     // Workspace lives under OS temp with a deterministic prefix.
     let timestamp = SystemTime::now()
@@ -769,7 +1190,7 @@ fn write_inputs(workspace: &Path, inputs: Option<&HashMap<String, String>>) -> R
     Ok(())
 }
 
-fn write_script(workspace: &Path, script: &str) -> Result<(), String> {
+fn write_script(workspace: &Path, script: &[u8]) -> Result<(), String> {
     // Script is always saved as task.py inside the workspace.
     let path = workspace.join("task.py");
     std::fs::write(path, script).map_err(|err| format!("write script: {err}"))?;
@@ -790,11 +1211,13 @@ struct ExecutionOutput {
 async fn execute_python(
     workspace: &Path,
     sandbox: &SandboxConfig,
+    limits: &ResourceLimits,
+    args: Option<&Vec<String>>,
 ) -> Result<ExecutionOutput, String> {
     let python_bin = sandbox.python_bin.as_str();
     let script_path = workspace.join("task.py");
 
-    let mut command = build_command(python_bin, script_path.as_path());
+    let mut command = build_command(python_bin, script_path.as_path(), args);
     command.current_dir(workspace);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -867,6 +1290,31 @@ async fn execute_python(
                 error: Some("timeout".to_string()),
             });
         }
+        reason = monitor_resource_limits(limits.clone()), if limits.any_set() => {
+            let _ = child.lock().await.kill().await;
+            stdout_handle.abort();
+            stderr_handle.abort();
+            let ended_at = SystemTime::now();
+            return Ok(ExecutionOutput {
+                status: "throttled".to_string(),
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                duration_ms: ended_at
+                    .duration_since(started_at)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+                started_at_ms: started_at
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                ended_at_ms: ended_at
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                exit_code: None,
+                error: Some(reason),
+            });
+        }
     };
 
     size_monitor.abort();
@@ -884,9 +1332,6 @@ async fn execute_python(
         .duration_since(started_at)
         .unwrap_or_default()
         .as_millis() as u64;
-
-    // CPU throttling hook: observe usage and react in future versions.
-    tracing::info!(cpu_throttle = "not_enforced", "cpu monitor placeholder");
 
     if !status.success() {
         return Ok(ExecutionOutput {
@@ -929,12 +1374,38 @@ async fn execute_python(
     })
 }
 
-fn build_command(python_bin: &str, script_path: &Path) -> Command {
+async fn monitor_resource_limits(limits: ResourceLimits) -> String {
+    let mut system = System::new_all();
+    let mut over_count = 0;
+    let mut warned_gpu = false;
+    loop {
+        let metrics = collect_metrics(&mut system);
+        if limits.gpu_percent.is_some() && metrics.gpu_load.is_none() && !warned_gpu {
+            tracing::warn!("GPU limit configured but GPU metrics unavailable");
+            warned_gpu = true;
+        }
+        let exceeded = exceeded_limits(&metrics, &limits);
+        if !exceeded.is_empty() {
+            over_count += 1;
+            if over_count >= 3 {
+                return format!("resource limits exceeded: {}", exceeded.join(", "));
+            }
+        } else {
+            over_count = 0;
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+}
+
+fn build_command(python_bin: &str, script_path: &Path, args: Option<&Vec<String>>) -> Command {
     #[cfg(unix)]
     {
         // Lower priority with nice when available.
         let mut command = Command::new("nice");
         command.arg("-n").arg("10").arg(python_bin).arg(script_path);
+        if let Some(args) = args {
+            command.args(args);
+        }
         command
     }
 
@@ -943,6 +1414,9 @@ fn build_command(python_bin: &str, script_path: &Path) -> Command {
         // Windows: priority lowering is a future enhancement.
         let mut command = Command::new(python_bin);
         command.arg(script_path);
+        if let Some(args) = args {
+            command.args(args);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1093,7 +1567,15 @@ fn load_config() -> Result<AgentConfig, String> {
     let node_id = env::var("NODE_ID")
         .ok()
         .or(file_config.node_id)
-        .unwrap_or_else(|| "dev-node".to_string());
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let node_id = if Uuid::parse_str(node_id.as_str()).is_ok() {
+        node_id
+    } else {
+        Uuid::new_v4().to_string()
+    };
+    let display_name = env::var("NODE_DISPLAY_NAME")
+        .ok()
+        .or(file_config.display_name);
     let scheduler_url = env::var("SCHEDULER_URL")
         .ok()
         .or(file_config.scheduler_url)
@@ -1113,6 +1595,31 @@ fn load_config() -> Result<AgentConfig, String> {
         .and_then(|value| value.parse::<u64>().ok())
         .or(file_config.runner_sleep_secs)
         .unwrap_or(2);
+    let batch_min = env::var("BATCH_MIN")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .or(file_config.batch_min)
+        .unwrap_or(3);
+    let batch_max = env::var("BATCH_MAX")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .or(file_config.batch_max)
+        .unwrap_or(8);
+    let batch_delay_min = env::var("BATCH_DELAY_MIN_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or(file_config.batch_delay_min_secs)
+        .unwrap_or(15);
+    let batch_delay_max = env::var("BATCH_DELAY_MAX_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or(file_config.batch_delay_max_secs)
+        .unwrap_or(180);
+    let metrics_interval = env::var("METRICS_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or(file_config.metrics_interval_secs)
+        .unwrap_or(60);
     let python_bin = env::var("PYTHON_BIN")
         .ok()
         .or(file_config.python_bin)
@@ -1137,13 +1644,47 @@ fn load_config() -> Result<AgentConfig, String> {
         .and_then(|value| value.parse::<u64>().ok())
         .or(file_config.stderr_limit_mb)
         .unwrap_or(10);
+    let eula_accepted = env::var("EULA_ACCEPTED")
+        .ok()
+        .map(|value| value == "1")
+        .or(file_config.eula_accepted)
+        .unwrap_or(false);
+    let project_id = env::var("PROJECT_ID")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .or(file_config.project_id);
+    let allowed_task_types = env::var("ALLOWED_TASK_TYPES")
+        .ok()
+        .map(|value| value.split(',').map(|item| item.trim().to_string()).collect())
+        .or(file_config.allowed_task_types)
+        .unwrap_or_default();
+    let limits = ResourceLimits {
+        cpu_percent: env::var("CPU_LIMIT_PERCENT")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .or(file_config.cpu_limit_percent),
+        gpu_percent: env::var("GPU_LIMIT_PERCENT")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .or(file_config.gpu_limit_percent),
+        ram_percent: env::var("RAM_LIMIT_PERCENT")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .or(file_config.ram_limit_percent),
+    };
 
-    Ok(AgentConfig {
+    let agent_config = AgentConfig {
         node_id,
+        display_name,
         scheduler_url,
         heartbeat_interval: Duration::from_secs(heartbeat_interval),
         poll_interval: Duration::from_secs(poll_interval),
         runner_sleep: Duration::from_secs(runner_sleep),
+        batch_min,
+        batch_max,
+        batch_delay_min: Duration::from_secs(batch_delay_min),
+        batch_delay_max: Duration::from_secs(batch_delay_max),
+        metrics_interval: Duration::from_secs(metrics_interval),
         sandbox: SandboxConfig {
             python_bin,
             timeout: Duration::from_secs(timeout_secs),
@@ -1151,7 +1692,22 @@ fn load_config() -> Result<AgentConfig, String> {
             stdout_limit_bytes: stdout_limit_mb * 1024 * 1024,
             stderr_limit_bytes: stderr_limit_mb * 1024 * 1024,
         },
-    })
+        eula_accepted,
+        project_id,
+        allowed_task_types,
+        limits,
+    };
+
+    if file_config.node_id.is_none() {
+        let mut persisted = file_config.clone();
+        persisted.node_id = Some(agent_config.node_id.clone());
+        if persisted.eula_accepted.is_none() {
+            persisted.eula_accepted = Some(agent_config.eula_accepted);
+        }
+        let _ = save_config(&config_path, &persisted);
+    }
+
+    Ok(agent_config)
 }
 
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
@@ -1159,6 +1715,132 @@ fn save_config(path: &Path, config: &FileConfig) -> Result<(), String> {
     let content = toml::to_string_pretty(config).map_err(|err| format!("encode config: {err}"))?;
     std::fs::write(path, content).map_err(|err| format!("write config: {err}"))?;
     Ok(())
+}
+
+fn collect_hardware_info() -> serde_json::Value {
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    let cpu = system.cpus().first().map(|cpu| cpu.brand().to_string());
+    let cpu_freq_mhz = system.cpus().first().map(|cpu| cpu.frequency() as u64);
+    let cpu_cores = system.cpus().len() as u64;
+    let total_memory_mb = system.total_memory() as f64 / 1024.0;
+    let os_name = System::name().unwrap_or_else(|| "unknown".to_string());
+    let os_version = System::os_version().unwrap_or_else(|| "unknown".to_string());
+    let gpu_info = collect_gpu_static_info();
+
+    let mut disk_total_mb = 0f64;
+    let mut disk_available_mb = 0f64;
+    for disk in system.disks() {
+        disk_total_mb += disk.total_space() as f64 / 1024.0 / 1024.0;
+        disk_available_mb += disk.available_space() as f64 / 1024.0 / 1024.0;
+    }
+
+    serde_json::json!({
+        "cpu_model": cpu,
+        "cpu_freq_mhz": cpu_freq_mhz,
+        "cpu_cores": cpu_cores,
+        "ram_total_mb": total_memory_mb,
+        "disk_total_mb": disk_total_mb,
+        "disk_available_mb": disk_available_mb,
+        "gpu_model": gpu_info.as_ref().map(|(name, _)| name),
+        "gpu_vram_mb": gpu_info.as_ref().map(|(_, vram)| vram),
+        "os_name": os_name,
+        "os_version": os_version
+    })
+}
+
+fn collect_gpu_static_info() -> Option<(String, f64)> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    let mut parts = line.split(',').map(|part| part.trim());
+    let name = parts.next()?.to_string();
+    let vram_mb = parts.next()?.parse::<f64>().ok()?;
+    Some((name, vram_mb))
+}
+
+fn collect_gpu_metrics() -> Option<(f32, f32)> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=utilization.gpu,memory.used",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    let mut parts = line.split(',').map(|part| part.trim());
+    let util = parts.next()?.parse::<f32>().ok()?;
+    let mem_used = parts.next()?.parse::<f32>().ok()?;
+    Some((util, mem_used))
+}
+
+fn collect_metrics(system: &mut System) -> AgentMetrics {
+    system.refresh_cpu();
+    system.refresh_memory();
+    system.refresh_networks();
+
+    let cpu_load = Some(system.global_cpu_info().cpu_usage());
+    let ram_used_mb = Some(system.used_memory() as f32 / 1024.0);
+    let ram_total_mb = Some(system.total_memory() as f32 / 1024.0);
+    let (gpu_load, gpu_mem_used_mb) = collect_gpu_metrics()
+        .map(|(load, used)| (Some(load), Some(used)))
+        .unwrap_or((None, None));
+
+    let mut net_rx: i64 = 0;
+    let mut net_tx: i64 = 0;
+    for (_name, data) in system.networks() {
+        net_rx += data.received() as i64;
+        net_tx += data.transmitted() as i64;
+    }
+
+    AgentMetrics {
+        cpu_load,
+        ram_used_mb,
+        ram_total_mb,
+        gpu_load,
+        gpu_mem_used_mb,
+        net_rx_bytes: Some(net_rx),
+        net_tx_bytes: Some(net_tx),
+        disk_read_bytes: None,
+        disk_write_bytes: None,
+    }
+}
+
+fn exceeded_limits(metrics: &AgentMetrics, limits: &ResourceLimits) -> Vec<String> {
+    let mut exceeded = Vec::new();
+    if let (Some(limit), Some(current)) = (limits.cpu_percent, metrics.cpu_load) {
+        if current > limit {
+            exceeded.push("cpu".to_string());
+        }
+    }
+    if let (Some(limit), Some(used), Some(total)) =
+        (limits.ram_percent, metrics.ram_used_mb, metrics.ram_total_mb)
+    {
+        let percent = (used / total) * 100.0;
+        if percent > limit {
+            exceeded.push("ram".to_string());
+        }
+    }
+    if let (Some(limit), Some(current)) = (limits.gpu_percent, metrics.gpu_load) {
+        if current > limit {
+            exceeded.push("gpu".to_string());
+        }
+    }
+    exceeded
 }
 
 #[cfg(feature = "gui")]
@@ -1181,12 +1863,20 @@ mod gui {
         status_state: Arc<Mutex<AgentRuntimeState>>,
         base_config: AgentConfig,
         node_id: String,
+        display_name: String,
         protocol: String,
         host: String,
         running: bool,
         stop: Option<StopSignal>,
         runtime: tokio::runtime::Runtime,
         last_error: Option<String>,
+        project_id: String,
+        allowed_task_types: String,
+        cpu_limit: String,
+        gpu_limit: String,
+        ram_limit: String,
+        eula_required: bool,
+        eula_scrolled: bool,
         show_info: bool,
         show_warn: bool,
         show_error: bool,
@@ -1198,10 +1888,16 @@ mod gui {
             let config_path = resolve_config_path();
             let base_config = load_config().unwrap_or_else(|_| AgentConfig {
                 node_id: "dev-node".to_string(),
+                display_name: None,
                 scheduler_url: "http://localhost:8082".to_string(),
                 heartbeat_interval: Duration::from_secs(10),
                 poll_interval: Duration::from_secs(5),
                 runner_sleep: Duration::from_secs(2),
+                batch_min: 3,
+                batch_max: 8,
+                batch_delay_min: Duration::from_secs(15),
+                batch_delay_max: Duration::from_secs(180),
+                metrics_interval: Duration::from_secs(60),
                 sandbox: SandboxConfig {
                     python_bin: "python".to_string(),
                     timeout: Duration::from_secs(60),
@@ -1209,6 +1905,10 @@ mod gui {
                     stdout_limit_bytes: 10 * 1024 * 1024,
                     stderr_limit_bytes: 10 * 1024 * 1024,
                 },
+                eula_accepted: false,
+                project_id: None,
+                allowed_task_types: Vec::new(),
+                limits: ResourceLimits::default(),
             });
 
             let (protocol, host) = split_url(&base_config.scheduler_url);
@@ -1225,12 +1925,35 @@ mod gui {
                 status_state,
                 base_config: base_config.clone(),
                 node_id: base_config.node_id,
+                display_name: base_config.display_name.unwrap_or_default(),
                 protocol,
                 host,
                 running: false,
                 stop: None,
                 runtime,
                 last_error: None,
+                project_id: base_config
+                    .project_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                allowed_task_types: base_config.allowed_task_types.join(", "),
+                cpu_limit: base_config
+                    .limits
+                    .cpu_percent
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                gpu_limit: base_config
+                    .limits
+                    .gpu_percent
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                ram_limit: base_config
+                    .limits
+                    .ram_percent
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                eula_required: !base_config.eula_accepted,
+                eula_scrolled: false,
                 show_info: true,
                 show_warn: true,
                 show_error: true,
@@ -1248,7 +1971,25 @@ mod gui {
             }
             let mut config = self.base_config.clone();
             config.node_id = self.node_id.trim().to_string();
+            config.display_name = if self.display_name.trim().is_empty() {
+                None
+            } else {
+                Some(self.display_name.trim().to_string())
+            };
             config.scheduler_url = self.scheduler_url();
+            config.project_id = self.project_id.trim().parse::<i64>().ok();
+            config.allowed_task_types = self
+                .allowed_task_types
+                .split(',')
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect();
+            config.limits = ResourceLimits {
+                cpu_percent: self.cpu_limit.trim().parse::<f32>().ok(),
+                gpu_percent: self.gpu_limit.trim().parse::<f32>().ok(),
+                ram_percent: self.ram_limit.trim().parse::<f32>().ok(),
+            };
+            config.eula_accepted = !self.eula_required;
 
             let stop = StopSignal::new();
             let runtime_state = self.status_state.clone();
@@ -1288,12 +2029,28 @@ mod gui {
         }
 
         fn save_settings(&mut self) {
+            let project_id = self.project_id.trim().parse::<i64>().ok();
+            let allowed_task_types = self
+                .allowed_task_types
+                .split(',')
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            let cpu_limit = self.cpu_limit.trim().parse::<f32>().ok();
+            let gpu_limit = self.gpu_limit.trim().parse::<f32>().ok();
+            let ram_limit = self.ram_limit.trim().parse::<f32>().ok();
             let file_config = FileConfig {
                 node_id: Some(self.node_id.trim().to_string()),
+                display_name: Some(self.display_name.trim().to_string()),
                 scheduler_url: Some(self.scheduler_url()),
                 heartbeat_interval_secs: Some(self.base_config.heartbeat_interval.as_secs()),
                 poll_interval_secs: Some(self.base_config.poll_interval.as_secs()),
                 runner_sleep_secs: Some(self.base_config.runner_sleep.as_secs()),
+                batch_min: Some(self.base_config.batch_min),
+                batch_max: Some(self.base_config.batch_max),
+                batch_delay_min_secs: Some(self.base_config.batch_delay_min.as_secs()),
+                batch_delay_max_secs: Some(self.base_config.batch_delay_max.as_secs()),
+                metrics_interval_secs: Some(self.base_config.metrics_interval.as_secs()),
                 python_bin: Some(self.base_config.sandbox.python_bin.clone()),
                 timeout_secs: Some(self.base_config.sandbox.timeout.as_secs()),
                 workspace_limit_mb: Some(
@@ -1301,6 +2058,12 @@ mod gui {
                 ),
                 stdout_limit_mb: Some(self.base_config.sandbox.stdout_limit_bytes / 1024 / 1024),
                 stderr_limit_mb: Some(self.base_config.sandbox.stderr_limit_bytes / 1024 / 1024),
+                eula_accepted: Some(!self.eula_required),
+                project_id,
+                allowed_task_types: Some(allowed_task_types),
+                cpu_limit_percent: cpu_limit,
+                gpu_limit_percent: gpu_limit,
+                ram_limit_percent: ram_limit,
             };
 
             if let Err(err) = save_config(&self.config_path, &file_config) {
@@ -1315,6 +2078,12 @@ mod gui {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
             let status_snapshot = self.runtime.block_on(self.status_state.lock()).clone();
             let connected = status_snapshot.connected;
+            let paused = status_snapshot.paused;
+            let blocked = status_snapshot.blocked;
+            let blocked_reason = status_snapshot
+                .blocked_reason
+                .clone()
+                .unwrap_or_else(|| "none".to_string());
             let current_task = status_snapshot
                 .current_task
                 .clone()
@@ -1333,16 +2102,60 @@ mod gui {
                 egui::Color32::from_rgb(148, 158, 170)
             };
 
+            if self.eula_required {
+                egui::Window::new("End User License Agreement")
+                    .collapsible(false)
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        ui.label("Please review and accept the EULA to continue.");
+                        let scroll = egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(EULA_TEXT)
+                                        .wrap(true)
+                                        .selectable(true),
+                                );
+                            });
+                        let at_bottom = scroll.state.offset.y + scroll.inner_rect.height()
+                            >= scroll.content_size.y - 4.0;
+                        if at_bottom {
+                            self.eula_scrolled = true;
+                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(self.eula_scrolled, egui::Button::new("Accept"))
+                                .clicked()
+                            {
+                                self.eula_required = false;
+                                self.base_config.eula_accepted = true;
+                                self.save_settings();
+                            }
+                            if ui.button("Decline").clicked() {
+                                self.last_error = Some("EULA declined".to_string());
+                            }
+                        });
+                    });
+            }
+
             egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(status_color, "●");
                     ui.label(if connected { "Connected" } else { "Offline" });
                     ui.label("Newral Agent");
                     if self.running {
+                        let pause_label = if paused { "Resume" } else { "Pause" };
+                        if ui.button(pause_label).clicked() {
+                            let mut status = self.runtime.block_on(self.status_state.lock());
+                            status.paused = !paused;
+                        }
                         if ui.button("Stop").clicked() {
                             self.stop_agent();
                         }
-                    } else if ui.button("Start").clicked() {
+                    } else if ui
+                        .add_enabled(!self.eula_required, egui::Button::new("Start"))
+                        .clicked()
+                    {
                         self.start_agent();
                     }
                 });
@@ -1350,6 +2163,11 @@ mod gui {
 
             egui::SidePanel::left("settings_panel").show(ctx, |ui| {
                 ui.heading("Status");
+                if blocked {
+                    ui.colored_label(egui::Color32::RED, format!("Blocked: {}", blocked_reason));
+                } else if paused {
+                    ui.colored_label(egui::Color32::from_rgb(179, 122, 10), "Paused");
+                }
                 ui.label(format!("Task: {}", current_task));
                 ui.label(format!("Last result: {}", last_result));
                 ui.label(format!("Last error: {}", last_error));
@@ -1358,6 +2176,12 @@ mod gui {
                 ui.heading("Settings");
                 ui.label("Node ID");
                 ui.text_edit_singleline(&mut self.node_id);
+                ui.label("Display name");
+                ui.text_edit_singleline(&mut self.display_name);
+                ui.label("Project ID");
+                ui.text_edit_singleline(&mut self.project_id);
+                ui.label("Allowed task types (comma)");
+                ui.text_edit_singleline(&mut self.allowed_task_types);
 
                 ui.separator();
                 ui.label("Server");
@@ -1367,6 +2191,15 @@ mod gui {
                 });
                 ui.text_edit_singleline(&mut self.host);
                 ui.label(format!("URL: {}", self.scheduler_url()));
+
+                ui.separator();
+                ui.heading("Resource limits (%)");
+                ui.label("CPU");
+                ui.text_edit_singleline(&mut self.cpu_limit);
+                ui.label("GPU");
+                ui.text_edit_singleline(&mut self.gpu_limit);
+                ui.label("RAM");
+                ui.text_edit_singleline(&mut self.ram_limit);
 
                 if ui.button("Save settings").clicked() {
                     self.save_settings();
