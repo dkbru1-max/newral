@@ -777,7 +777,7 @@ impl Agent {
                     Ok(Some(tasks)) => {
                         for task in tasks {
                             queue.push_back(task);
-                        }
+                        },
                     }
                     Ok(None) => {
                         tracing::debug!("no tasks available");
@@ -2069,7 +2069,7 @@ mod gui {
                             status.blocked_reason = response.blocked_reason;
                             log_clone.push_line(LogLevel::Error, "Agent blocked by server");
                             return;
-                        }
+                        },
                     }
                     Err(err) => {
                         let mut status = state_clone.lock().await;
@@ -2207,7 +2207,7 @@ mod gui {
                             >= scroll.content_size.y - 4.0;
                         if at_bottom {
                             self.eula_scrolled = true;
-                        }
+                        },
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(self.eula_scrolled, egui::Button::new("Accept"))
@@ -2350,208 +2350,216 @@ mod gui {
             egui::CentralPanel::default().show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     match self.section {
-                    AgentSection::Overview => {
-                        ui.label(
-                            egui::RichText::new("Overview")
-                                .size(20.0)
-                                .strong()
-                                .color(ink),
-                        );
-                        ui.label(
-                            egui::RichText::new("Live status and capacity at a glance.")
-                                .size(12.0)
-                                .color(muted),
-                        );
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-                        ui.horizontal_wrapped(|ui| {
-                            portal_card(ui, |ui| {
-                                ui.label(egui::RichText::new("Connection").color(muted));
-                                ui.colored_label(status_color, if connected { "Online" } else { "Offline" });
-                                ui.label(format!(
-                                    "Project ID: {}",
-                                    if self.project_id.is_empty() { "auto" } else { &self.project_id }
-                                ));
-                            });
-                            portal_card(ui, |ui| {
-                                ui.label(egui::RichText::new("Current task").color(muted));
-                                ui.label(current_task);
-                                ui.label(format!("Last result: {}", last_result));
-                            });
-                            portal_card(ui, |ui| {
-                                ui.label(egui::RichText::new("Agent health").color(muted));
-                                ui.label(format!("Last error: {}", last_error));
-                            });
-                        });
-
-                        ui.add_space(16.0);
-                        ui.label(
-                            egui::RichText::new("Hardware profile")
-                                .size(16.0)
-                                .strong()
-                                .color(ink),
-                        );
-                        ui.label(
-                            egui::RichText::new("Reported on registration.")
-                                .size(12.0)
-                                .color(muted),
-                        );
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-                        let cpu = self
-                            .hardware_snapshot
-                            .get("cpu_model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        let ram = self
-                            .hardware_snapshot
-                            .get("ram_total_mb")
-                            .and_then(|v| v.as_f64())
-                            .map(|v| format!("{:.0} MB", v))
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let disk = self
-                            .hardware_snapshot
-                            .get("disk_total_mb")
-                            .and_then(|v| v.as_f64())
-                            .map(|v| format!("{:.0} MB", v))
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let gpu = self
-                            .hardware_snapshot
-                            .get("gpu_model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("none");
-                        portal_card(ui, |ui| {
-                            ui.label(format!("CPU: {cpu}"));
-                            ui.label(format!("RAM: {ram}"));
-                            ui.label(format!("Disk: {disk}"));
-                            ui.label(format!("GPU: {gpu}"));
-                        });
-
-                        ui.add_space(16.0);
-                        ui.label(
-                            egui::RichText::new("Live metrics")
-                                .size(16.0)
-                                .strong()
-                                .color(ink),
-                        );
-                        ui.label(
-                            egui::RichText::new("Updated every few seconds.")
-                                .size(12.0)
-                                .color(muted),
-                        );
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-                        portal_card(ui, |ui| {
-                            if let Some(metrics) = &self.last_metrics {
-                                ui.label(format!(
-                                    "CPU: {}%  RAM: {} / {} MB",
-                                    metrics
-                                        .cpu_load
-                                        .map(|v| format!("{v:.1}"))
-                                        .unwrap_or_else(|| "—".to_string()),
-                                    metrics
-                                        .ram_used_mb
-                                        .map(|v| format!("{v:.0}"))
-                                        .unwrap_or_else(|| "—".to_string()),
-                                    metrics
-                                        .ram_total_mb
-                                        .map(|v| format!("{v:.0}"))
-                                        .unwrap_or_else(|| "—".to_string()),
-                                ));
-                                ui.label(format!(
-                                    "Net RX: {}  Net TX: {}",
-                                    metrics
-                                        .net_rx_bytes
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "—".to_string()),
-                                    metrics
-                                        .net_tx_bytes
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "—".to_string()),
-                                ));
-                            } else {
-                                ui.label("Metrics collecting...");
-                            }
-                        });
-                    }
-                    AgentSection::Settings => {
-                        ui.heading("Settings");
-                        ui.separator();
-                        ui.label("Node ID");
-                        ui.text_edit_singleline(&mut self.node_id);
-                        ui.label("Display name");
-                        ui.text_edit_singleline(&mut self.display_name);
-                        ui.label("Project ID");
-                        ui.text_edit_singleline(&mut self.project_id);
-                        ui.label("Allowed task types (comma separated)");
-                        ui.text_edit_singleline(&mut self.allowed_task_types);
-                        ui.separator();
-                        ui.label("Server");
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.protocol, "http".to_string(), "HTTP");
-                            ui.radio_value(&mut self.protocol, "https".to_string(), "HTTPS");
-                        });
-                        ui.text_edit_singleline(&mut self.host);
-                        ui.label(format!("URL: {}", self.scheduler_url()));
-                        if ui.button("Save settings").clicked() {
-                            self.save_settings();
-                        }
-                    }
-                    AgentSection::Limits => {
-                        ui.heading("Resource limits");
-                        ui.separator();
-                        ui.label("CPU limit (%)");
-                        ui.text_edit_singleline(&mut self.cpu_limit);
-                        ui.label("GPU limit (%)");
-                        ui.text_edit_singleline(&mut self.gpu_limit);
-                        ui.label("RAM limit (%)");
-                        ui.text_edit_singleline(&mut self.ram_limit);
-                        if ui.button("Save limits").clicked() {
-                            self.save_settings();
-                        }
-                    }
-                    AgentSection::Logs => {
-                        ui.heading("Logs");
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.show_info, "Info");
-                            ui.checkbox(&mut self.show_warn, "Warn");
-                            ui.checkbox(&mut self.show_error, "Error");
-                            ui.checkbox(&mut self.show_success, "Success");
-                        });
-                        ui.separator();
-                        let lines = self.log_buffer.snapshot();
-                        egui::ScrollArea::vertical()
-                            .stick_to_bottom(true)
-                            .show(ui, |ui| {
-                                for entry in lines {
-                                    let show = match entry.level {
-                                        LogLevel::Info => self.show_info,
-                                        LogLevel::Warn => self.show_warn,
-                                        LogLevel::Error => self.show_error,
-                                        LogLevel::Success => self.show_success,
-                                    };
-                                    if !show {
-                                        continue;
-                                    }
-                                    let color = match entry.level {
-                                        LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
-                                        LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
-                                        LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
-                                        LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
-                                    };
+                        AgentSection::Overview => {
+                            ui.label(
+                                egui::RichText::new("Overview")
+                                    .size(20.0)
+                                    .strong()
+                                    .color(ink),
+                            );
+                            ui.label(
+                                egui::RichText::new("Live status and capacity at a glance.")
+                                    .size(12.0)
+                                    .color(muted),
+                            );
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            ui.horizontal_wrapped(|ui| {
+                                portal_card(ui, |ui| {
+                                    ui.label(egui::RichText::new("Connection").color(muted));
                                     ui.colored_label(
-                                        color,
-                                        format!("[{}] {}", entry.level.label(), entry.message),
+                                        status_color,
+                                        if connected { "Online" } else { "Offline" },
                                     );
+                                    ui.label(format!(
+                                        "Project ID: {}",
+                                        if self.project_id.is_empty() {
+                                            "auto"
+                                        } else {
+                                            &self.project_id
+                                        }
+                                    ));
+                                });
+                                portal_card(ui, |ui| {
+                                    ui.label(egui::RichText::new("Current task").color(muted));
+                                    ui.label(current_task);
+                                    ui.label(format!("Last result: {}", last_result));
+                                });
+                                portal_card(ui, |ui| {
+                                    ui.label(egui::RichText::new("Agent health").color(muted));
+                                    ui.label(format!("Last error: {}", last_error));
+                                });
+                            });
+
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new("Hardware profile")
+                                    .size(16.0)
+                                    .strong()
+                                    .color(ink),
+                            );
+                            ui.label(
+                                egui::RichText::new("Reported on registration.")
+                                    .size(12.0)
+                                    .color(muted),
+                            );
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            let cpu = self
+                                .hardware_snapshot
+                                .get("cpu_model")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let ram = self
+                                .hardware_snapshot
+                                .get("ram_total_mb")
+                                .and_then(|v| v.as_f64())
+                                .map(|v| format!("{:.0} MB", v))
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let disk = self
+                                .hardware_snapshot
+                                .get("disk_total_mb")
+                                .and_then(|v| v.as_f64())
+                                .map(|v| format!("{:.0} MB", v))
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let gpu = self
+                                .hardware_snapshot
+                                .get("gpu_model")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("none");
+                            portal_card(ui, |ui| {
+                                ui.label(format!("CPU: {cpu}"));
+                                ui.label(format!("RAM: {ram}"));
+                                ui.label(format!("Disk: {disk}"));
+                                ui.label(format!("GPU: {gpu}"));
+                            });
+
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new("Live metrics")
+                                    .size(16.0)
+                                    .strong()
+                                    .color(ink),
+                            );
+                            ui.label(
+                                egui::RichText::new("Updated every few seconds.")
+                                    .size(12.0)
+                                    .color(muted),
+                            );
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            portal_card(ui, |ui| {
+                                if let Some(metrics) = &self.last_metrics {
+                                    ui.label(format!(
+                                        "CPU: {}%  RAM: {} / {} MB",
+                                        metrics
+                                            .cpu_load
+                                            .map(|v| format!("{v:.1}"))
+                                            .unwrap_or_else(|| "—".to_string()),
+                                        metrics
+                                            .ram_used_mb
+                                            .map(|v| format!("{v:.0}"))
+                                            .unwrap_or_else(|| "—".to_string()),
+                                        metrics
+                                            .ram_total_mb
+                                            .map(|v| format!("{v:.0}"))
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ));
+                                    ui.label(format!(
+                                        "Net RX: {}  Net TX: {}",
+                                        metrics
+                                            .net_rx_bytes
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                        metrics
+                                            .net_tx_bytes
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "—".to_string()),
+                                    ));
+                                } else {
+                                    ui.label("Metrics collecting...");
                                 }
                             });
+                        },
+                        AgentSection::Settings => {
+                            ui.heading("Settings");
+                            ui.separator();
+                            ui.label("Node ID");
+                            ui.text_edit_singleline(&mut self.node_id);
+                            ui.label("Display name");
+                            ui.text_edit_singleline(&mut self.display_name);
+                            ui.label("Project ID");
+                            ui.text_edit_singleline(&mut self.project_id);
+                            ui.label("Allowed task types (comma separated)");
+                            ui.text_edit_singleline(&mut self.allowed_task_types);
+                            ui.separator();
+                            ui.label("Server");
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut self.protocol, "http".to_string(), "HTTP");
+                                ui.radio_value(&mut self.protocol, "https".to_string(), "HTTPS");
+                            });
+                            ui.text_edit_singleline(&mut self.host);
+                            ui.label(format!("URL: {}", self.scheduler_url()));
+                            if ui.button("Save settings").clicked() {
+                                self.save_settings();
+                            }
+                        },
+                        AgentSection::Limits => {
+                            ui.heading("Resource limits");
+                            ui.separator();
+                            ui.label("CPU limit (%)");
+                            ui.text_edit_singleline(&mut self.cpu_limit);
+                            ui.label("GPU limit (%)");
+                            ui.text_edit_singleline(&mut self.gpu_limit);
+                            ui.label("RAM limit (%)");
+                            ui.text_edit_singleline(&mut self.ram_limit);
+                            if ui.button("Save limits").clicked() {
+                                self.save_settings();
+                            }
+                        },
+                        AgentSection::Logs => {
+                            ui.heading("Logs");
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.show_info, "Info");
+                                ui.checkbox(&mut self.show_warn, "Warn");
+                                ui.checkbox(&mut self.show_error, "Error");
+                                ui.checkbox(&mut self.show_success, "Success");
+                            });
+                            ui.separator();
+                            let lines = self.log_buffer.snapshot();
+                            egui::ScrollArea::vertical()
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    for entry in lines {
+                                        let show = match entry.level {
+                                            LogLevel::Info => self.show_info,
+                                            LogLevel::Warn => self.show_warn,
+                                            LogLevel::Error => self.show_error,
+                                            LogLevel::Success => self.show_success,
+                                        };
+                                        if !show {
+                                            continue;
+                                        }
+                                        let color = match entry.level {
+                                            LogLevel::Info => egui::Color32::from_rgb(34, 46, 60),
+                                            LogLevel::Warn => egui::Color32::from_rgb(179, 122, 10),
+                                            LogLevel::Error => egui::Color32::from_rgb(196, 48, 48),
+                                            LogLevel::Success => egui::Color32::from_rgb(31, 139, 76),
+                                        };
+                                        ui.colored_label(
+                                            color,
+                                            format!("[{}] {}", entry.level.label(), entry.message),
+                                        );
+                                    }
+                                });
+                        },
                     }
-                }
                 });
+            });
 
             ctx.request_repaint_after(Duration::from_millis(200));
         }
