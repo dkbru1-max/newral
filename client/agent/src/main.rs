@@ -1894,8 +1894,6 @@ mod gui {
     use eframe::egui;
     use serde_json::Value;
 
-    const PORTAL_LOGO: egui::ImageData = egui::include_image!("../../frontend/public/newral_big_logo.png");
-
     #[derive(Copy, Clone, PartialEq, Eq)]
     enum AgentSection {
         Overview,
@@ -2251,10 +2249,11 @@ mod gui {
                 )
                 .show(ctx, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.image(
-                            egui::Image::new(PORTAL_LOGO)
-                                .fit_to_exact_size(egui::vec2(140.0, 32.0)),
-                        );
+                        let logo = egui::Image::new(egui::include_image!(
+                            "../../../frontend/public/newral_big_logo.png"
+                        ))
+                        .fit_to_exact_size(egui::vec2(140.0, 32.0));
+                        ui.add(logo);
                         ui.label(
                             egui::RichText::new("Agent")
                                 .strong()
