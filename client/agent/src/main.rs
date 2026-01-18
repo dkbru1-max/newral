@@ -777,7 +777,7 @@ impl Agent {
                     Ok(Some(tasks)) => {
                         for task in tasks {
                             queue.push_back(task);
-                        },
+                        }
                     }
                     Ok(None) => {
                         tracing::debug!("no tasks available");
@@ -2069,7 +2069,7 @@ mod gui {
                             status.blocked_reason = response.blocked_reason;
                             log_clone.push_line(LogLevel::Error, "Agent blocked by server");
                             return;
-                        },
+                        }
                     }
                     Err(err) => {
                         let mut status = state_clone.lock().await;
@@ -2207,7 +2207,7 @@ mod gui {
                             >= scroll.content_size.y - 4.0;
                         if at_bottom {
                             self.eula_scrolled = true;
-                        },
+                        }
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(self.eula_scrolled, egui::Button::new("Accept"))
@@ -2574,12 +2574,11 @@ mod gui {
         }
         ("http".to_string(), url.to_string())
     }
-}
-
-#[cfg(feature = "gui")]
-fn apply_portal_style(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::light();
+    
+    #[cfg(feature = "gui")]
+    fn apply_portal_style(ctx: &egui::Context) {
+        let mut style = (*ctx.style()).clone();
+        style.visuals = egui::Visuals::light();
     style.visuals.window_rounding = egui::Rounding::same(18.0);
     style.visuals.widgets.inactive.rounding = egui::Rounding::same(12.0);
     style.visuals.widgets.hovered.rounding = egui::Rounding::same(12.0);
@@ -2611,21 +2610,22 @@ fn apply_portal_style(ctx: &egui::Context) {
     );
     style.spacing.item_spacing = egui::vec2(12.0, 10.0);
     style.spacing.window_margin = egui::Margin::same(16.0);
-    ctx.set_style(style);
-}
+        ctx.set_style(style);
+    }
 
-#[cfg(feature = "gui")]
-fn portal_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    let frame = egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(255, 255, 255))
-        .rounding(egui::Rounding::same(14.0))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(15, 27, 42, 20)))
-        .shadow(egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 12.0),
-            blur: 24.0,
-            spread: 0.0,
-            color: egui::Color32::from_rgba_premultiplied(15, 27, 42, 18),
-        })
-        .inner_margin(egui::Margin::same(12.0));
-    frame.show(ui, add);
+    #[cfg(feature = "gui")]
+    fn portal_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+        let frame = egui::Frame::group(ui.style())
+            .fill(egui::Color32::from_rgb(255, 255, 255))
+            .rounding(egui::Rounding::same(14.0))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(15, 27, 42, 20)))
+            .shadow(egui::epaint::Shadow {
+                offset: egui::vec2(0.0, 12.0),
+                blur: 24.0,
+                spread: 0.0,
+                color: egui::Color32::from_rgba_premultiplied(15, 27, 42, 18),
+            })
+            .inner_margin(egui::Margin::same(12.0));
+        frame.show(ui, add);
+    }
 }
