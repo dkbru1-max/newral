@@ -27,14 +27,14 @@ jobs:
           Get-FileHash $exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  newral-agent.exe" } | Out-File "client/agent/target/release/newral-agent.exe.sha256" -Encoding ascii
 
       - name: Import GPG key (optional)
-        if: secrets.GPG_PRIVATE_KEY != ''
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         run: |
           $key = "${{ secrets.GPG_PRIVATE_KEY }}"
           $pass = "${{ secrets.GPG_PASSPHRASE }}"
           $key | gpg --batch --yes --passphrase $pass --import
 
       - name: Sign artifacts (optional)
-        if: secrets.GPG_PRIVATE_KEY != ''
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         run: |
           $pass = "${{ secrets.GPG_PASSPHRASE }}"
           gpg --batch --yes --passphrase $pass --armor --detach-sign client/agent/target/release/newral-agent.exe
