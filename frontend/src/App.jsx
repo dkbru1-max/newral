@@ -39,6 +39,16 @@ const navItems = [
   { id: "system-health", title: "System Health", anchor: "system-health" }
 ];
 
+const formatGb = (valueGb, valueMb) => {
+  if (typeof valueGb === "number" && !Number.isNaN(valueGb)) {
+    return `${valueGb.toFixed(1)} GB`;
+  }
+  if (typeof valueMb === "number" && !Number.isNaN(valueMb)) {
+    return `${(valueMb / 1024).toFixed(1)} GB`;
+  }
+  return "—";
+};
+
 const initialAgents = [];
 
 const initialTasks = [
@@ -303,7 +313,15 @@ function DashboardPage({
               <div key={bucket.label} className="chart-bar">
                 <div
                   className="chart-bar-fill"
-                  style={{ height: `${(bucket.value / maxBucket) * 100}%` }}
+                  style={{
+                    height: `${Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        maxBucket ? (bucket.value / maxBucket) * 100 : 0
+                      )
+                    )}%`
+                  }}
                 ></div>
                 <span>{bucket.label}</span>
               </div>
@@ -576,9 +594,10 @@ function AgentsPage({ agents, summaryLoaded, sectionId }) {
                   </td>
                   <td>{agent.hardware?.cpu_model ?? "—"}</td>
                   <td>
-                    {agent.hardware?.ram_total_mb
-                      ? `${Math.round(agent.hardware.ram_total_mb)} MB`
-                      : "—"}
+                    {formatGb(
+                      agent.hardware?.ram_total_gb,
+                      agent.hardware?.ram_total_mb
+                    )}
                   </td>
                   <td>{agent.hardware?.gpu_model ?? "—"}</td>
                   <td>
@@ -628,23 +647,30 @@ function AgentDetailPage({ agents }) {
           <h3>Hardware</h3>
           <p className="muted">
             CPU: {agent.hardware?.cpu_model ?? "—"} · RAM:{" "}
-            {agent.hardware?.ram_total_mb
-              ? `${Math.round(agent.hardware.ram_total_mb)} MB`
-              : "—"}
+            {formatGb(
+              agent.hardware?.ram_total_gb,
+              agent.hardware?.ram_total_mb
+            )}
           </p>
           <p className="muted">
             GPU: {agent.hardware?.gpu_model ?? "—"} · Disk:{" "}
-            {agent.hardware?.disk_total_mb
-              ? `${Math.round(agent.hardware.disk_total_mb)} MB`
-              : "—"}
+            {formatGb(
+              agent.hardware?.disk_total_gb,
+              agent.hardware?.disk_total_mb
+            )}
           </p>
         </div>
         <div className="stat-card">
           <h3>Recent metrics</h3>
           <p className="muted">
             CPU {agent.metrics?.cpu_load?.toFixed(1) ?? "—"}% · RAM{" "}
-            {agent.metrics?.ram_used_mb?.toFixed(0) ?? "—"} MB · Net{" "}
-            {agent.metrics?.net_rx_bytes ?? "—"} B
+            {formatGb(
+              agent.metrics?.ram_used_mb
+                ? agent.metrics.ram_used_mb / 1024
+                : null,
+              null
+            )}{" "}
+            · Net {agent.metrics?.net_rx_bytes ?? "—"} B
           </p>
         </div>
       </div>

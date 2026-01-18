@@ -1745,7 +1745,7 @@ fn collect_hardware_info() -> serde_json::Value {
     let cpu = system.cpus().first().map(|cpu| cpu.brand().to_string());
     let cpu_freq_mhz = system.cpus().first().map(|cpu| cpu.frequency() as u64);
     let cpu_cores = system.cpus().len() as u64;
-    let total_memory_mb = system.total_memory() as f64 / 1024.0;
+    let total_memory_mb = system.total_memory() as f64 / 1024.0 / 1024.0;
     let os_name = System::name().unwrap_or_else(|| "unknown".to_string());
     let os_version = System::os_version().unwrap_or_else(|| "unknown".to_string());
     let gpu_info = collect_gpu_static_info();
@@ -1757,14 +1757,20 @@ fn collect_hardware_info() -> serde_json::Value {
         disk_total_mb += disk.total_space() as f64 / 1024.0 / 1024.0;
         disk_available_mb += disk.available_space() as f64 / 1024.0 / 1024.0;
     }
+    let disk_total_gb = disk_total_mb / 1024.0;
+    let disk_available_gb = disk_available_mb / 1024.0;
+    let ram_total_gb = total_memory_mb / 1024.0;
 
     serde_json::json!({
         "cpu_model": cpu,
         "cpu_freq_mhz": cpu_freq_mhz,
         "cpu_cores": cpu_cores,
         "ram_total_mb": total_memory_mb,
+        "ram_total_gb": ram_total_gb,
         "disk_total_mb": disk_total_mb,
         "disk_available_mb": disk_available_mb,
+        "disk_total_gb": disk_total_gb,
+        "disk_available_gb": disk_available_gb,
         "gpu_model": gpu_info.as_ref().map(|(name, _)| name),
         "gpu_vram_mb": gpu_info.as_ref().map(|(_, vram)| vram),
         "os_name": os_name,
@@ -1833,8 +1839,8 @@ fn collect_metrics(system: &mut System) -> AgentMetrics {
     networks.refresh();
 
     let cpu_load = Some(system.global_cpu_info().cpu_usage());
-    let ram_used_mb = Some(system.used_memory() as f32 / 1024.0);
-    let ram_total_mb = Some(system.total_memory() as f32 / 1024.0);
+    let ram_used_mb = Some(system.used_memory() as f32 / 1024.0 / 1024.0);
+    let ram_total_mb = Some(system.total_memory() as f32 / 1024.0 / 1024.0);
     let (gpu_load, gpu_mem_used_mb) = collect_gpu_metrics()
         .map(|(load, used)| (Some(load), Some(used)))
         .unwrap_or((None, None));
@@ -1888,6 +1894,8 @@ mod gui {
     use eframe::egui;
     use serde_json::Value;
 
+    const PORTAL_LOGO: egui::ImageData = egui::include_image!("../../frontend/public/newral_big_logo.png");
+
     #[derive(Copy, Clone, PartialEq, Eq)]
     enum AgentSection {
         Overview,
@@ -1900,7 +1908,12 @@ mod gui {
         let log_buffer = LogBuffer::new(500);
         init_tracing(Some(log_buffer.clone()));
 
-        let options = eframe::NativeOptions::default();
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size(egui::vec2(980.0, 720.0))
+                .with_min_inner_size(egui::vec2(860.0, 620.0)),
+            ..Default::default()
+        };
         let app = AgentGui::new(log_buffer);
         let _ = eframe::run_native("Newral Agent", options, Box::new(|_cc| Ok(Box::new(app))));
     }
@@ -2181,6 +2194,11 @@ mod gui {
             let muted = egui::Color32::from_rgb(91, 107, 125);
             let accent = egui::Color32::from_rgb(26, 140, 255);
             let line = egui::Color32::from_rgba_premultiplied(15, 27, 42, 20);
+            let format_gb = |value: Option<f64>| {
+                value
+                    .map(|v| format!("{:.1} GB", v))
+                    .unwrap_or_else(|| "unknown".to_string())
+            };
 
             if self.last_metrics_at.elapsed() >= Duration::from_secs(5) {
                 let mut system = System::new_all();
@@ -2232,12 +2250,10 @@ mod gui {
                         .inner_margin(egui::Margin::symmetric(16.0, 12.0)),
                 )
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("NEWRAL")
-                                .strong()
-                                .size(18.0)
-                                .color(accent),
+                    ui.horizontal_wrapped(|ui| {
+                        ui.image(
+                            egui::Image::new(PORTAL_LOGO)
+                                .fit_to_exact_size(egui::vec2(140.0, 32.0)),
                         );
                         ui.label(
                             egui::RichText::new("Agent")
@@ -2414,16 +2430,24 @@ mod gui {
                                 .unwrap_or("unknown");
                             let ram = self
                                 .hardware_snapshot
-                                .get("ram_total_mb")
+                                .get("ram_total_gb")
                                 .and_then(|v| v.as_f64())
-                                .map(|v| format!("{:.0} MB", v))
-                                .unwrap_or_else(|| "unknown".to_string());
+                                .or_else(|| {
+                                    self.hardware_snapshot
+                                        .get("ram_total_mb")
+                                        .and_then(|v| v.as_f64())
+                                        .map(|v| v / 1024.0)
+                                });
                             let disk = self
                                 .hardware_snapshot
-                                .get("disk_total_mb")
+                                .get("disk_total_gb")
                                 .and_then(|v| v.as_f64())
-                                .map(|v| format!("{:.0} MB", v))
-                                .unwrap_or_else(|| "unknown".to_string());
+                                .or_else(|| {
+                                    self.hardware_snapshot
+                                        .get("disk_total_mb")
+                                        .and_then(|v| v.as_f64())
+                                        .map(|v| v / 1024.0)
+                                });
                             let gpu = self
                                 .hardware_snapshot
                                 .get("gpu_model")
@@ -2431,8 +2455,8 @@ mod gui {
                                 .unwrap_or("none");
                             portal_card(ui, |ui| {
                                 ui.label(format!("CPU: {cpu}"));
-                                ui.label(format!("RAM: {ram}"));
-                                ui.label(format!("Disk: {disk}"));
+                                ui.label(format!("RAM: {}", format_gb(ram)));
+                                ui.label(format!("Disk: {}", format_gb(disk)));
                                 ui.label(format!("GPU: {gpu}"));
                             });
 
@@ -2453,20 +2477,16 @@ mod gui {
                             ui.add_space(8.0);
                             portal_card(ui, |ui| {
                                 if let Some(metrics) = &self.last_metrics {
+                                    let ram_used_gb = metrics.ram_used_mb.map(|v| v as f64 / 1024.0);
+                                    let ram_total_gb = metrics.ram_total_mb.map(|v| v as f64 / 1024.0);
                                     ui.label(format!(
-                                        "CPU: {}%  RAM: {} / {} MB",
+                                        "CPU: {}%  RAM: {} / {}",
                                         metrics
                                             .cpu_load
                                             .map(|v| format!("{v:.1}"))
                                             .unwrap_or_else(|| "—".to_string()),
-                                        metrics
-                                            .ram_used_mb
-                                            .map(|v| format!("{v:.0}"))
-                                            .unwrap_or_else(|| "—".to_string()),
-                                        metrics
-                                            .ram_total_mb
-                                            .map(|v| format!("{v:.0}"))
-                                            .unwrap_or_else(|| "—".to_string()),
+                                        format_gb(ram_used_gb),
+                                        format_gb(ram_total_gb),
                                     ));
                                     ui.label(format!(
                                         "Net RX: {}  Net TX: {}",

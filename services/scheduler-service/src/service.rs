@@ -1209,6 +1209,13 @@ pub async fn start_bpsw_project(
             "database error".to_string(),
         )
     })?;
+    if let Err(err) = db::update_project_status(&transaction, project.id, "active").await {
+        return Err(ServiceError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            err,
+        ));
+    }
 
     for task_type in task_types.iter() {
         let record = script_records
