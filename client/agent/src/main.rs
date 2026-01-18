@@ -917,6 +917,12 @@ impl Agent {
             return Ok(None);
         }
         if body.policy_decision == "deny" || body.granted_tasks == 0 || body.tasks.is_empty() {
+            if body.reasons.iter().any(|reason| reason == "project_not_active") {
+                self.log(
+                    LogLevel::Warn,
+                    "Project is not active. Start it from the Admin Portal.",
+                );
+            }
             tracing::info!(reasons = ?body.reasons, "batch denied or empty");
             return Ok(None);
         }
@@ -1892,7 +1898,22 @@ fn exceeded_limits(metrics: &AgentMetrics, limits: &ResourceLimits) -> Vec<Strin
 mod gui {
     use super::*;
     use eframe::egui;
+    use image::GenericImageView;
     use serde_json::Value;
+
+    const LOGO_BYTES: &[u8] =
+        include_bytes!("../../../frontend/public/newral_big_logo.png");
+
+    fn load_icon_data() -> Option<eframe::IconData> {
+        let image = image::load_from_memory(LOGO_BYTES).ok()?;
+        let rgba = image.to_rgba8();
+        let (width, height) = image.dimensions();
+        Some(eframe::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        })
+    }
 
     #[derive(Copy, Clone, PartialEq, Eq)]
     enum AgentSection {
@@ -1910,6 +1931,7 @@ mod gui {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size(egui::vec2(980.0, 720.0))
                 .with_min_inner_size(egui::vec2(860.0, 620.0)),
+            icon_data: load_icon_data(),
             ..Default::default()
         };
         let app = AgentGui::new(log_buffer);
@@ -1944,6 +1966,7 @@ mod gui {
         hardware_snapshot: Value,
         last_metrics: Option<AgentMetrics>,
         last_metrics_at: Instant,
+        image_loaders_ready: bool,
     }
 
     impl AgentGui {
@@ -2025,6 +2048,7 @@ mod gui {
                 hardware_snapshot: collect_hardware_info(),
                 last_metrics: None,
                 last_metrics_at: Instant::now(),
+                image_loaders_ready: false,
             }
         }
 
@@ -2162,6 +2186,10 @@ mod gui {
 
     impl eframe::App for AgentGui {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            if !self.image_loaders_ready {
+                egui_extras::install_image_loaders(ctx);
+                self.image_loaders_ready = true;
+            }
             apply_portal_style(ctx);
             let status_snapshot = self.runtime.block_on(self.status_state.lock()).clone();
             let connected = status_snapshot.connected;

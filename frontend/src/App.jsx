@@ -862,6 +862,9 @@ function ProjectsPage({
           <p className="muted">Launch distributed search tasks from the portal.</p>
           <div className="pill-row">
             <span className="pill">{bpswStatus}</span>
+            <span className="pill">
+              Project ID: {bpswProject?.id ?? "—"}
+            </span>
             {bpswActionState.info && <span className="pill">{bpswActionState.info}</span>}
           </div>
           <div className="form-grid">
