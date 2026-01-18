@@ -2348,7 +2348,8 @@ mod gui {
                 });
 
             egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| match self.section {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    match self.section {
                     AgentSection::Overview => {
                         ui.label(
                             egui::RichText::new("Overview")
@@ -2550,7 +2551,7 @@ mod gui {
                             });
                     }
                 }
-            });
+                });
 
             ctx.request_repaint_after(Duration::from_millis(200));
         }
