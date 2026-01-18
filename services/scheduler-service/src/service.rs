@@ -507,20 +507,24 @@ pub async fn update_agent_metrics(
 ) -> Result<crate::models::HeartbeatResponse, ServiceError> {
     let agent_uid = parse_agent_uid(payload.agent_uid.as_str())?;
     let db = state.db.lock().await;
-    let agent = db::select_agent(&*db, &agent_uid)
+    let agent = match db::select_agent(&*db, &agent_uid)
         .await
         .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
-        .ok_or_else(|| {
-            ServiceError::new(
-                StatusCode::BAD_REQUEST,
-                "agent_not_registered",
-                "agent must register before sending metrics".to_string(),
-            )
-        })?;
+    {
+        Some(agent) => agent,
+        None => db::upsert_agent(&*db, &agent_uid, &None, None, None, None)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?,
+    };
 
     db::insert_agent_metrics(&*db, agent.id, &payload.metrics)
         .await
         .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    if let Some(hardware) = payload.hardware {
+        db::upsert_agent_hardware(&*db, agent.id, &hardware)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    }
     notify_update(state);
     Ok(HeartbeatResponse { status: "ok" })
 }

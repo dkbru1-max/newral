@@ -201,6 +201,7 @@ pub struct AgentRegisterResponse {
 pub struct AgentMetricsRequest {
     pub agent_uid: String,
     pub metrics: AgentMetrics,
+    pub hardware: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

@@ -199,6 +199,7 @@ struct AgentRegisterResponse {
 struct AgentMetricsRequest<'a> {
     agent_uid: &'a str,
     metrics: AgentMetrics,
+    hardware: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -678,23 +679,42 @@ impl Agent {
 
     async fn metrics_loop(&self, stop: StopSignal) {
         let mut system = System::new_all();
+        let mut sent_hardware = false;
         loop {
             if stop.stopped() {
                 break;
             }
             let metrics = collect_metrics(&mut system);
             let url = format!("{}/v1/agents/metrics", self.config.scheduler_url);
+            let hardware = if sent_hardware {
+                None
+            } else {
+                Some(collect_hardware_info())
+            };
             let response = self
                 .client
                 .post(url)
                 .json(&AgentMetricsRequest {
                     agent_uid: &self.config.node_id,
                     metrics,
+                    hardware,
                 })
                 .send()
                 .await;
-            if let Err(err) = response {
-                tracing::warn!(error = %err, "metrics send failed");
+            match response {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        sent_hardware = true;
+                    } else if !sent_hardware {
+                        tracing::warn!(
+                            status = response.status().as_u16(),
+                            "metrics upload rejected"
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "metrics send failed");
+                }
             }
             if stop.sleep_or_stop(self.config.metrics_interval).await {
                 break;
@@ -1753,11 +1773,19 @@ fn collect_hardware_info() -> serde_json::Value {
 }
 
 fn collect_gpu_static_info() -> Option<(String, f64)> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=name,memory.total",
-            "--format=csv,noheader,nounits",
-        ])
+    let mut command = std::process::Command::new("nvidia-smi");
+    command.args([
+        "--query-gpu=name,memory.total",
+        "--format=csv,noheader,nounits",
+    ]);
+    #[cfg(windows)]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command
         .output()
         .ok()?;
     if !output.status.success() {
@@ -1772,11 +1800,19 @@ fn collect_gpu_static_info() -> Option<(String, f64)> {
 }
 
 fn collect_gpu_metrics() -> Option<(f32, f32)> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=utilization.gpu,memory.used",
-            "--format=csv,noheader,nounits",
-        ])
+    let mut command = std::process::Command::new("nvidia-smi");
+    command.args([
+        "--query-gpu=utilization.gpu,memory.used",
+        "--format=csv,noheader,nounits",
+    ]);
+    #[cfg(windows)]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command
         .output()
         .ok()?;
     if !output.status.success() {
@@ -2022,7 +2058,26 @@ mod gui {
             };
 
             let stop_clone = stop.clone();
+            let state_clone = self.status_state.clone();
+            let log_clone = self.log_buffer.clone();
             self.runtime.spawn(async move {
+                match agent.register().await {
+                    Ok(response) => {
+                        if response.blocked {
+                            let mut status = state_clone.lock().await;
+                            status.blocked = true;
+                            status.blocked_reason = response.blocked_reason;
+                            log_clone.push_line(LogLevel::Error, "Agent blocked by server");
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        let mut status = state_clone.lock().await;
+                        status.last_error = Some(format!("registration: {err}"));
+                        log_clone.push_line(LogLevel::Error, "Agent registration failed");
+                        return;
+                    }
+                }
                 let _handles = spawn_agent(agent, stop_clone);
             });
 
@@ -2096,6 +2151,7 @@ mod gui {
 
     impl eframe::App for AgentGui {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            apply_portal_style(ctx);
             let status_snapshot = self.runtime.block_on(self.status_state.lock()).clone();
             let connected = status_snapshot.connected;
             let paused = status_snapshot.paused;
@@ -2121,6 +2177,10 @@ mod gui {
             } else {
                 egui::Color32::from_rgb(148, 158, 170)
             };
+            let ink = egui::Color32::from_rgb(15, 27, 42);
+            let muted = egui::Color32::from_rgb(91, 107, 125);
+            let accent = egui::Color32::from_rgb(26, 140, 255);
+            let line = egui::Color32::from_rgba_premultiplied(15, 27, 42, 20);
 
             if self.last_metrics_at.elapsed() >= Duration::from_secs(5) {
                 let mut system = System::new_all();
@@ -2164,100 +2224,257 @@ mod gui {
                     });
             }
 
-            egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(status_color, "●");
-                    ui.label(if connected { "Connected" } else { "Offline" });
-                    ui.label(format!("Newral Agent v{}", AGENT_VERSION));
-                    if self.running {
-                        let pause_label = if paused { "Resume" } else { "Pause" };
-                        if ui.button(pause_label).clicked() {
-                            let mut status = self.runtime.block_on(self.status_state.lock());
-                            status.paused = !paused;
-                        }
-                        if ui.button("Stop").clicked() {
-                            self.stop_agent();
-                        }
-                    } else if ui
-                        .add_enabled(!self.eula_required, egui::Button::new("Start"))
-                        .clicked()
-                    {
-                        self.start_agent();
+            egui::TopBottomPanel::top("top_bar")
+                .frame(
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(255, 255, 255))
+                        .stroke(egui::Stroke::new(1.0, line))
+                        .inner_margin(egui::Margin::symmetric(16.0, 12.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("NEWRAL")
+                                .strong()
+                                .size(18.0)
+                                .color(accent),
+                        );
+                        ui.label(
+                            egui::RichText::new("Agent")
+                                .strong()
+                                .size(18.0)
+                                .color(ink),
+                        );
+                        ui.add_space(12.0);
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(239, 244, 252))
+                            .rounding(egui::Rounding::same(10.0))
+                            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(status_color, "●");
+                                    ui.label(if connected { "Connected" } else { "Offline" });
+                                });
+                            });
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(format!("v{}", AGENT_VERSION))
+                                .size(12.0)
+                                .color(muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.running {
+                                let pause_label = if paused { "Resume" } else { "Pause" };
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(pause_label)
+                                                .color(ink)
+                                                .strong(),
+                                        )
+                                        .fill(egui::Color32::from_rgb(235, 241, 252)),
+                                    )
+                                    .clicked()
+                                {
+                                    let mut status = self.runtime.block_on(self.status_state.lock());
+                                    status.paused = !paused;
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Stop")
+                                                .color(egui::Color32::from_rgb(132, 24, 24))
+                                                .strong(),
+                                        )
+                                        .fill(egui::Color32::from_rgb(255, 232, 232)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.stop_agent();
+                                }
+                            } else if ui
+                                .add_enabled(
+                                    !self.eula_required,
+                                    egui::Button::new(
+                                        egui::RichText::new("Start")
+                                            .color(egui::Color32::WHITE)
+                                            .strong(),
+                                    )
+                                    .fill(accent),
+                                )
+                                .clicked()
+                            {
+                                self.start_agent();
+                            }
+                        });
+                    });
+                });
+
+            egui::SidePanel::left("nav_panel")
+                .frame(
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(255, 255, 255))
+                        .stroke(egui::Stroke::new(1.0, line))
+                        .inner_margin(egui::Margin::same(16.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new("Operations")
+                            .strong()
+                            .color(ink),
+                    );
+                    ui.label(
+                        egui::RichText::new("Control center")
+                            .size(12.0)
+                            .color(muted),
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.selectable_value(&mut self.section, AgentSection::Overview, "Overview");
+                    ui.selectable_value(&mut self.section, AgentSection::Settings, "Settings");
+                    ui.selectable_value(&mut self.section, AgentSection::Limits, "Limits");
+                    ui.selectable_value(&mut self.section, AgentSection::Logs, "Logs");
+                    ui.add_space(12.0);
+                    ui.separator();
+                    if blocked {
+                        ui.colored_label(egui::Color32::from_rgb(200, 46, 46), format!("Blocked: {}", blocked_reason));
+                    } else if paused {
+                        ui.colored_label(egui::Color32::from_rgb(179, 122, 10), "Paused");
+                    }
+                    if let Some(err) = &self.last_error {
+                        ui.colored_label(egui::Color32::from_rgb(200, 46, 46), err);
                     }
                 });
-            });
-
-            egui::SidePanel::left("nav_panel").show(ctx, |ui| {
-                ui.heading("Newral Agent");
-                ui.label("Operations");
-                ui.separator();
-                ui.selectable_value(&mut self.section, AgentSection::Overview, "Overview");
-                ui.selectable_value(&mut self.section, AgentSection::Settings, "Settings");
-                ui.selectable_value(&mut self.section, AgentSection::Limits, "Limits");
-                ui.selectable_value(&mut self.section, AgentSection::Logs, "Logs");
-                ui.separator();
-                if blocked {
-                    ui.colored_label(egui::Color32::RED, format!("Blocked: {}", blocked_reason));
-                } else if paused {
-                    ui.colored_label(egui::Color32::from_rgb(179, 122, 10), "Paused");
-                }
-                if let Some(err) = &self.last_error {
-                    ui.colored_label(egui::Color32::RED, err);
-                }
-            });
 
             egui::CentralPanel::default().show(ctx, |ui| {
-                match self.section {
+                egui::ScrollArea::vertical().show(ui, |ui| match self.section {
                     AgentSection::Overview => {
-                        ui.heading("Overview");
+                        ui.label(
+                            egui::RichText::new("Overview")
+                                .size(20.0)
+                                .strong()
+                                .color(ink),
+                        );
+                        ui.label(
+                            egui::RichText::new("Live status and capacity at a glance.")
+                                .size(12.0)
+                                .color(muted),
+                        );
+                        ui.add_space(8.0);
                         ui.separator();
+                        ui.add_space(8.0);
                         ui.horizontal_wrapped(|ui| {
-                            ui.group(|ui| {
-                                ui.label("Connection");
+                            portal_card(ui, |ui| {
+                                ui.label(egui::RichText::new("Connection").color(muted));
                                 ui.colored_label(status_color, if connected { "Online" } else { "Offline" });
-                                ui.label(format!("Project ID: {}", if self.project_id.is_empty() { "auto" } else { &self.project_id }));
+                                ui.label(format!(
+                                    "Project ID: {}",
+                                    if self.project_id.is_empty() { "auto" } else { &self.project_id }
+                                ));
                             });
-                            ui.group(|ui| {
-                                ui.label("Current task");
+                            portal_card(ui, |ui| {
+                                ui.label(egui::RichText::new("Current task").color(muted));
                                 ui.label(current_task);
                                 ui.label(format!("Last result: {}", last_result));
                             });
-                            ui.group(|ui| {
-                                ui.label("Last error");
-                                ui.label(last_error);
+                            portal_card(ui, |ui| {
+                                ui.label(egui::RichText::new("Agent health").color(muted));
+                                ui.label(format!("Last error: {}", last_error));
                             });
                         });
 
-                        ui.add_space(12.0);
-                        ui.heading("Hardware");
+                        ui.add_space(16.0);
+                        ui.label(
+                            egui::RichText::new("Hardware profile")
+                                .size(16.0)
+                                .strong()
+                                .color(ink),
+                        );
+                        ui.label(
+                            egui::RichText::new("Reported on registration.")
+                                .size(12.0)
+                                .color(muted),
+                        );
+                        ui.add_space(6.0);
                         ui.separator();
-                        let cpu = self.hardware_snapshot.get("cpu_model").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        let ram = self.hardware_snapshot.get("ram_total_mb").and_then(|v| v.as_f64()).map(|v| format!("{:.0} MB", v)).unwrap_or_else(|| "unknown".to_string());
-                        let disk = self.hardware_snapshot.get("disk_total_mb").and_then(|v| v.as_f64()).map(|v| format!("{:.0} MB", v)).unwrap_or_else(|| "unknown".to_string());
-                        let gpu = self.hardware_snapshot.get("gpu_model").and_then(|v| v.as_str()).unwrap_or("none");
-                        ui.label(format!("CPU: {cpu}"));
-                        ui.label(format!("RAM: {ram}"));
-                        ui.label(format!("Disk: {disk}"));
-                        ui.label(format!("GPU: {gpu}"));
+                        ui.add_space(8.0);
+                        let cpu = self
+                            .hardware_snapshot
+                            .get("cpu_model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let ram = self
+                            .hardware_snapshot
+                            .get("ram_total_mb")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| format!("{:.0} MB", v))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let disk = self
+                            .hardware_snapshot
+                            .get("disk_total_mb")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| format!("{:.0} MB", v))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let gpu = self
+                            .hardware_snapshot
+                            .get("gpu_model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("none");
+                        portal_card(ui, |ui| {
+                            ui.label(format!("CPU: {cpu}"));
+                            ui.label(format!("RAM: {ram}"));
+                            ui.label(format!("Disk: {disk}"));
+                            ui.label(format!("GPU: {gpu}"));
+                        });
 
-                        ui.add_space(12.0);
-                        ui.heading("Live metrics");
+                        ui.add_space(16.0);
+                        ui.label(
+                            egui::RichText::new("Live metrics")
+                                .size(16.0)
+                                .strong()
+                                .color(ink),
+                        );
+                        ui.label(
+                            egui::RichText::new("Updated every few seconds.")
+                                .size(12.0)
+                                .color(muted),
+                        );
+                        ui.add_space(6.0);
                         ui.separator();
-                        if let Some(metrics) = &self.last_metrics {
-                            ui.label(format!(
-                                "CPU: {}%  RAM: {} / {} MB",
-                                metrics.cpu_load.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".to_string()),
-                                metrics.ram_used_mb.map(|v| format!("{v:.0}")).unwrap_or_else(|| "—".to_string()),
-                                metrics.ram_total_mb.map(|v| format!("{v:.0}")).unwrap_or_else(|| "—".to_string()),
-                            ));
-                            ui.label(format!(
-                                "Net RX: {}  Net TX: {}",
-                                metrics.net_rx_bytes.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string()),
-                                metrics.net_tx_bytes.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string()),
-                            ));
-                        } else {
-                            ui.label("Metrics collecting...");
-                        }
+                        ui.add_space(8.0);
+                        portal_card(ui, |ui| {
+                            if let Some(metrics) = &self.last_metrics {
+                                ui.label(format!(
+                                    "CPU: {}%  RAM: {} / {} MB",
+                                    metrics
+                                        .cpu_load
+                                        .map(|v| format!("{v:.1}"))
+                                        .unwrap_or_else(|| "—".to_string()),
+                                    metrics
+                                        .ram_used_mb
+                                        .map(|v| format!("{v:.0}"))
+                                        .unwrap_or_else(|| "—".to_string()),
+                                    metrics
+                                        .ram_total_mb
+                                        .map(|v| format!("{v:.0}"))
+                                        .unwrap_or_else(|| "—".to_string()),
+                                ));
+                                ui.label(format!(
+                                    "Net RX: {}  Net TX: {}",
+                                    metrics
+                                        .net_rx_bytes
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "—".to_string()),
+                                    metrics
+                                        .net_tx_bytes
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "—".to_string()),
+                                ));
+                            } else {
+                                ui.label("Metrics collecting...");
+                            }
+                        });
                     }
                     AgentSection::Settings => {
                         ui.heading("Settings");
@@ -2348,4 +2565,58 @@ mod gui {
         }
         ("http".to_string(), url.to_string())
     }
+}
+
+#[cfg(feature = "gui")]
+fn apply_portal_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::light();
+    style.visuals.window_rounding = egui::Rounding::same(18.0);
+    style.visuals.widgets.inactive.rounding = egui::Rounding::same(12.0);
+    style.visuals.widgets.hovered.rounding = egui::Rounding::same(12.0);
+    style.visuals.widgets.active.rounding = egui::Rounding::same(12.0);
+    style.visuals.panel_fill = egui::Color32::from_rgb(246, 248, 251);
+    style.visuals.window_fill = egui::Color32::from_rgb(246, 248, 251);
+    style.visuals.faint_bg_color = egui::Color32::from_rgb(255, 255, 255);
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(26, 140, 255);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(26, 140, 255));
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(255, 255, 255);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(235, 241, 252);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(26, 140, 255);
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 27, 42));
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 27, 42));
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(15, 27, 42));
+    style.text_styles.insert(
+        egui::TextStyle::Heading,
+        egui::FontId::new(20.0, egui::FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Small,
+        egui::FontId::new(12.0, egui::FontFamily::Proportional),
+    );
+    style.spacing.item_spacing = egui::vec2(12.0, 10.0);
+    style.spacing.window_margin = egui::Margin::same(16.0);
+    ctx.set_style(style);
+}
+
+#[cfg(feature = "gui")]
+fn portal_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let frame = egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(255, 255, 255))
+        .rounding(egui::Rounding::same(14.0))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(15, 27, 42, 20)))
+        .shadow(egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 12.0),
+            blur: 24.0,
+            spread: 0.0,
+            color: egui::Color32::from_rgba_premultiplied(15, 27, 42, 18),
+        })
+        .inner_margin(egui::Margin::same(12.0));
+    frame.show(ui, add);
 }
