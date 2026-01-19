@@ -1904,11 +1904,11 @@ mod gui {
     const LOGO_BYTES: &[u8] =
         include_bytes!("../../../frontend/public/newral_big_logo.png");
 
-    fn load_icon_data() -> Option<eframe::IconData> {
+    fn load_icon_data() -> Option<egui::IconData> {
         let image = image::load_from_memory(LOGO_BYTES).ok()?;
         let rgba = image.to_rgba8();
         let (width, height) = image.dimensions();
-        Some(eframe::IconData {
+        Some(egui::IconData {
             rgba: rgba.into_raw(),
             width,
             height,
@@ -1927,11 +1927,14 @@ mod gui {
         let log_buffer = LogBuffer::new(500);
         init_tracing(Some(log_buffer.clone()));
 
+        let mut viewport = egui::ViewportBuilder::default()
+            .with_inner_size(egui::vec2(980.0, 720.0))
+            .with_min_inner_size(egui::vec2(860.0, 620.0));
+        if let Some(icon) = load_icon_data() {
+            viewport = viewport.with_icon(icon);
+        }
         let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size(egui::vec2(980.0, 720.0))
-                .with_min_inner_size(egui::vec2(860.0, 620.0)),
-            icon_data: load_icon_data(),
+            viewport,
             ..Default::default()
         };
         let app = AgentGui::new(log_buffer);
