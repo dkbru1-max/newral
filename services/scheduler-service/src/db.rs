@@ -449,7 +449,8 @@ pub async fn fetch_recent_tasks(
     project: &str,
 ) -> Result<Vec<TaskSummary>, String> {
     let sql = format!(
-        "SELECT id, status FROM {}.tasks ORDER BY updated_at DESC, id DESC LIMIT 6",
+        "SELECT id, status, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS updated_at \
+         FROM {}.tasks ORDER BY updated_at DESC, id DESC LIMIT 6",
         schema
     );
     let rows = db
@@ -464,6 +465,7 @@ pub async fn fetch_recent_tasks(
             project: project.to_string(),
             status: row.get::<_, String>("status"),
             priority: "normal".to_string(),
+            updated_at: row.get("updated_at"),
         })
         .collect())
 }

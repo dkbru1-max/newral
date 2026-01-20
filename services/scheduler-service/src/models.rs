@@ -148,6 +148,7 @@ pub struct TaskSummary {
     pub project: String,
     pub status: String,
     pub priority: String,
+    pub updated_at: String,
 }
 
 #[derive(Default, Serialize)]

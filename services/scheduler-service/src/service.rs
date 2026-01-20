@@ -72,6 +72,14 @@ fn app_version() -> String {
     raw.trim().to_string()
 }
 
+fn normalize_project_status(status: &str) -> String {
+    if status == "stopped" {
+        "interrupted".to_string()
+    } else {
+        status.to_string()
+    }
+}
+
 fn project_response(project: Project) -> crate::models::ProjectResponse {
     crate::models::ProjectResponse {
         id: project.id,
@@ -79,7 +87,7 @@ fn project_response(project: Project) -> crate::models::ProjectResponse {
         name: project.name,
         description: project.description,
         owner_id: project.owner_id,
-        status: project.status,
+        status: normalize_project_status(&project.status),
         is_demo: project.is_demo,
         storage_prefix: project.storage_prefix,
         created_at: project.created_at,
@@ -561,11 +569,14 @@ pub async fn update_agent_preferences(
     Ok(HeartbeatResponse { status: "ok" })
 }
 
-pub async fn list_projects(state: &AppState) -> Result<Vec<Project>, ServiceError> {
+pub async fn list_projects(
+    state: &AppState,
+) -> Result<Vec<crate::models::ProjectResponse>, ServiceError> {
     let mut db = state.db.lock().await;
-    db::list_projects(&mut db)
+    let projects = db::list_projects(&mut db)
         .await
-        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))
+        .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+    Ok(projects.into_iter().map(project_response).collect())
 }
 
 pub async fn list_agents(state: &AppState) -> Result<Vec<crate::models::AgentInfo>, ServiceError> {
@@ -782,7 +793,7 @@ pub async fn stop_project(
             "database error".to_string(),
         )
     })?;
-    let project = db::update_project_status(&transaction, project_id, "stopped")
+    let project = db::update_project_status(&transaction, project_id, "interrupted")
         .await
         .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
     let affected = transaction
@@ -1449,6 +1460,13 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
         let counts = db::task_counts(&mut db, &schema)
             .await
             .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+        if project.status == "active"
+            && counts.queued == 0
+            && counts.running == 0
+            && counts.completed > 0
+        {
+            let _ = db::update_project_status(&mut db, project.id, "completed").await;
+        }
         queue.queued += counts.queued;
         queue.running += counts.running;
         queue.completed += counts.completed;

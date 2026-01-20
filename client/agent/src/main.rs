@@ -1902,7 +1902,7 @@ mod gui {
     use serde_json::Value;
 
     const LOGO_BYTES: &[u8] =
-        include_bytes!("../../../frontend/public/newral_big_logo.png");
+        include_bytes!("../newral_big_logo_without_newral.png");
 
     fn load_icon_data() -> Option<egui::IconData> {
         let image = image::load_from_memory(LOGO_BYTES).ok()?;
@@ -1913,6 +1913,18 @@ mod gui {
             width,
             height,
         })
+    }
+
+    fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        let image = image::load_from_memory(LOGO_BYTES).ok()?;
+        let rgba = image.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        Some(ctx.load_texture(
+            "newral_logo",
+            color_image,
+            egui::TextureOptions::LINEAR,
+        ))
     }
 
     #[derive(Copy, Clone, PartialEq, Eq)]
@@ -1969,7 +1981,7 @@ mod gui {
         hardware_snapshot: Value,
         last_metrics: Option<AgentMetrics>,
         last_metrics_at: Instant,
-        image_loaders_ready: bool,
+        logo_texture: Option<egui::TextureHandle>,
     }
 
     impl AgentGui {
@@ -2051,7 +2063,7 @@ mod gui {
                 hardware_snapshot: collect_hardware_info(),
                 last_metrics: None,
                 last_metrics_at: Instant::now(),
-                image_loaders_ready: false,
+                logo_texture: None,
             }
         }
 
@@ -2189,9 +2201,8 @@ mod gui {
 
     impl eframe::App for AgentGui {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            if !self.image_loaders_ready {
-                egui_extras::install_image_loaders(ctx);
-                self.image_loaders_ready = true;
+            if self.logo_texture.is_none() {
+                self.logo_texture = load_logo_texture(ctx);
             }
             apply_portal_style(ctx);
             let status_snapshot = self.runtime.block_on(self.status_state.lock()).clone();
@@ -2280,11 +2291,9 @@ mod gui {
                 )
                 .show(ctx, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        let logo = egui::Image::new(egui::include_image!(
-                            "../../../frontend/public/newral_big_logo.png"
-                        ))
-                        .fit_to_exact_size(egui::vec2(140.0, 32.0));
-                        ui.add(logo);
+                        if let Some(texture) = &self.logo_texture {
+                            ui.image(texture, egui::vec2(48.0, 48.0));
+                        }
                         ui.label(
                             egui::RichText::new("Agent")
                                 .strong()
@@ -2411,32 +2420,39 @@ mod gui {
                             ui.add_space(8.0);
                             ui.separator();
                             ui.add_space(8.0);
-                            ui.horizontal_wrapped(|ui| {
-                                portal_card(ui, |ui| {
-                                    ui.label(egui::RichText::new("Connection").color(muted));
-                                    ui.colored_label(
-                                        status_color,
-                                        if connected { "Online" } else { "Offline" },
-                                    );
-                                    ui.label(format!(
-                                        "Project ID: {}",
-                                        if self.project_id.is_empty() {
-                                            "auto"
-                                        } else {
-                                            &self.project_id
-                                        }
-                                    ));
+                            let columns = overview_card_columns(ui, 220.0);
+                            let mut column = 0usize;
+                            egui::Grid::new("overview_cards")
+                                .spacing(egui::vec2(12.0, 12.0))
+                                .show(ui, |ui| {
+                                    add_overview_card(ui, &mut column, columns, |ui| {
+                                        ui.label(egui::RichText::new("Connection").color(muted));
+                                        ui.colored_label(
+                                            status_color,
+                                            if connected { "Online" } else { "Offline" },
+                                        );
+                                        ui.label(format!(
+                                            "Project ID: {}",
+                                            if self.project_id.is_empty() {
+                                                "auto"
+                                            } else {
+                                                &self.project_id
+                                            }
+                                        ));
+                                    });
+                                    add_overview_card(ui, &mut column, columns, |ui| {
+                                        ui.label(egui::RichText::new("Current task").color(muted));
+                                        ui.label(current_task);
+                                        ui.label(format!("Last result: {}", last_result));
+                                    });
+                                    add_overview_card(ui, &mut column, columns, |ui| {
+                                        ui.label(egui::RichText::new("Agent health").color(muted));
+                                        ui.label(format!("Last error: {}", last_error));
+                                    });
+                                    if column != 0 {
+                                        ui.end_row();
+                                    }
                                 });
-                                portal_card(ui, |ui| {
-                                    ui.label(egui::RichText::new("Current task").color(muted));
-                                    ui.label(current_task);
-                                    ui.label(format!("Last result: {}", last_result));
-                                });
-                                portal_card(ui, |ui| {
-                                    ui.label(egui::RichText::new("Agent health").color(muted));
-                                    ui.label(format!("Last error: {}", last_error));
-                                });
-                            });
 
                             ui.add_space(16.0);
                             ui.label(
@@ -2677,5 +2693,27 @@ mod gui {
             })
             .inner_margin(egui::Margin::same(12.0));
         frame.show(ui, add);
+    }
+
+    #[cfg(feature = "gui")]
+    fn overview_card_columns(ui: &egui::Ui, min_width: f32) -> usize {
+        let available = ui.available_width().max(min_width);
+        let columns = (available / (min_width + 12.0)).floor() as usize;
+        columns.max(1)
+    }
+
+    #[cfg(feature = "gui")]
+    fn add_overview_card(
+        ui: &mut egui::Ui,
+        column: &mut usize,
+        columns: usize,
+        add: impl FnOnce(&mut egui::Ui),
+    ) {
+        portal_card(ui, add);
+        *column += 1;
+        if *column >= columns {
+            ui.end_row();
+            *column = 0;
+        }
     }
 }

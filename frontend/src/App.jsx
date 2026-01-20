@@ -849,6 +849,8 @@ function ProjectsPage({
   const bpswRecentTasks = tasks
     .filter((task) => task.project === "bpsw_hunter")
     .slice(0, 6);
+  const bpswPausedDisabled =
+    bpswStatus === "completed" || bpswStatus === "interrupted";
   return (
     <section className="section" id={sectionId}>
       <div className="section-header">
@@ -940,16 +942,20 @@ function ProjectsPage({
             <button
               className="btn ghost"
               onClick={() => bpswProject && onProjectAction(bpswProject, "pause")}
-              disabled={!bpswProject || bpswStatus === "stopped" || bpswActionLoading}
+              disabled={!bpswProject || bpswPausedDisabled || bpswActionLoading}
             >
               Pause
             </button>
           </div>
+        </div>
+        <div className="stat-card">
+          <h3>Recent BPSW tasks</h3>
+          <p className="muted">Live queue snapshots for the active project.</p>
           <div className="table-card table-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>Recent BPSW tasks</th>
+                  <th>Task</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -981,7 +987,6 @@ function ProjectsPage({
               <th>Project</th>
               <th>Status</th>
               <th>Owner</th>
-              <th>Progress</th>
               <th>Actions</th>
               <th>Details</th>
             </tr>
@@ -999,11 +1004,6 @@ function ProjectsPage({
                 <td className="status-label">{project.status}</td>
                 <td>{project.owner}</td>
                 <td>
-                  <div className="mini-bar">
-                    <div style={{ width: `${project.progress}%` }}></div>
-                  </div>
-                </td>
-                <td>
                   <div className="pill-row">
                     <button
                       className="btn ghost"
@@ -1015,14 +1015,19 @@ function ProjectsPage({
                     <button
                       className="btn ghost"
                       onClick={() => onProjectAction(project, "pause")}
-                      disabled={!project.id || project.status === "stopped" || actionState.loading}
+                      disabled={
+                        !project.id ||
+                        project.status === "completed" ||
+                        project.status === "interrupted" ||
+                        actionState.loading
+                      }
                     >
                       Pause
                     </button>
                   </div>
                 </td>
                 <td>
-                  <Link to={projectPath(project.name)} className="link">View</Link>
+                  <Link to={projectPath(project.name)} className="link">View details</Link>
                 </td>
               </tr>
               );
@@ -1034,7 +1039,7 @@ function ProjectsPage({
   );
 }
 
-function ProjectDetailPage({ projects, onProjectAction, projectActions }) {
+function ProjectDetailPage({ projects, tasks, onProjectAction, projectActions }) {
   const { projectName } = useParams();
   const decodedName = decodeURIComponent(projectName ?? "");
   const project = projects.find((entry) => entry.name === decodedName);
@@ -1045,6 +1050,24 @@ function ProjectDetailPage({ projects, onProjectAction, projectActions }) {
   const isActive = project.status === "active";
   const actionLabel = isActive ? "Stop" : "Start";
   const action = isActive ? "stop" : "start";
+  const [detailQuery, setDetailQuery] = useState("");
+  const [detailStatus, setDetailStatus] = useState("all");
+  const projectTasks = useMemo(() => {
+    const filtered = tasks.filter((task) => task.project === project.name);
+    const query = detailQuery.trim().toLowerCase();
+    const byQuery = query
+      ? filtered.filter((task) => task.id.toLowerCase().includes(query))
+      : filtered;
+    const byStatus =
+      detailStatus === "all"
+        ? byQuery
+        : byQuery.filter((task) => task.status === detailStatus);
+    return byStatus.sort((a, b) => {
+      const left = a.updated_at ?? "";
+      const right = b.updated_at ?? "";
+      return right.localeCompare(left);
+    });
+  }, [tasks, project.name, detailQuery, detailStatus]);
   return (
     <section className="section">
       <div className="section-header">
@@ -1064,12 +1087,12 @@ function ProjectDetailPage({ projects, onProjectAction, projectActions }) {
           <p className="muted">{project.owner}</p>
         </div>
         <div className="stat-card">
-          <h3>Progress</h3>
-          <p className="muted">{project.progress}%</p>
+          <h3>Project GUID</h3>
+          <p className="muted mono">{project.guid ?? "—"}</p>
         </div>
         <div className="stat-card">
-          <h3>Participants</h3>
-          <p className="muted">12 active agents</p>
+          <h3>Storage Prefix</h3>
+          <p className="muted mono">{project.storage_prefix ?? "—"}</p>
         </div>
       </div>
       <div className="card-grid">
@@ -1086,7 +1109,12 @@ function ProjectDetailPage({ projects, onProjectAction, projectActions }) {
             <button
               className="btn ghost"
               onClick={() => onProjectAction(project, "pause")}
-              disabled={!project.id || project.status === "stopped" || actionState.loading}
+              disabled={
+                !project.id ||
+                project.status === "completed" ||
+                project.status === "interrupted" ||
+                actionState.loading
+              }
             >
               Pause
             </button>
@@ -1094,6 +1122,68 @@ function ProjectDetailPage({ projects, onProjectAction, projectActions }) {
           {actionState.error && <p className="error">{actionState.error}</p>}
           {actionState.info && <p className="muted">{actionState.info}</p>}
         </div>
+        <div className="stat-card">
+          <h3>Project metadata</h3>
+          <p className="muted">
+            {project.description ?? "No description provided."}
+          </p>
+          <p className="muted">
+            Created at: {project.created_at ?? "—"}
+          </p>
+        </div>
+      </div>
+      <div className="section-header">
+        <div>
+          <h3>Live computation log</h3>
+          <p>Real-time task activity with search and chronology.</p>
+        </div>
+        <div className="filter-row">
+          <input
+            className="input"
+            placeholder="Search task ID"
+            value={detailQuery}
+            onChange={(event) => setDetailQuery(event.target.value)}
+          />
+          <select
+            className="input"
+            value={detailStatus}
+            onChange={(event) => setDetailStatus(event.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="done">Done</option>
+            <option value="waiting">Waiting</option>
+          </select>
+        </div>
+      </div>
+      <div className="table-card table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Status</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {projectTasks.length === 0 ? (
+              <tr>
+                <td colSpan="3" className="muted">
+                  No tasks yet for this project.
+                </td>
+              </tr>
+            ) : (
+              projectTasks.map((task) => (
+                <tr key={task.id}>
+                  <td>{task.id}</td>
+                  <td>{task.status}</td>
+                  <td className="mono">{task.updated_at ?? "—"}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
     </section>
   );
@@ -1551,14 +1641,21 @@ function PortalApp() {
         if (!Array.isArray(data) || !isMounted) {
           return;
         }
-        const mapped = data.map((project) => ({
-          id: project.id ?? null,
-          name: project.name,
-          status: project.status ?? (project.is_demo ? "demo" : "active"),
-          owner: project.owner_id ?? "core",
-          progress: project.is_demo ? 100 : 0,
-          is_demo: project.is_demo ?? false
-        }));
+        const mapped = data.map((project) => {
+          const status = project.status ?? (project.is_demo ? "demo" : "active");
+          return {
+            id: project.id ?? null,
+            name: project.name,
+            status: status === "stopped" ? "interrupted" : status,
+            owner: project.owner_id ?? "core",
+            progress: project.is_demo ? 100 : 0,
+            is_demo: project.is_demo ?? false,
+            guid: project.guid,
+            storage_prefix: project.storage_prefix,
+            description: project.description,
+            created_at: project.created_at
+          };
+        });
         if (mapped.length > 0) {
           setProjectsData(mapped);
         }
@@ -2057,7 +2154,8 @@ function PortalApp() {
           projectsData[index % projectsData.length]?.name ??
           "Demo",
         agent: agentId ?? "auto",
-        priority: task.priority ?? "normal"
+        priority: task.priority ?? "normal",
+        updated_at: task.updated_at
       };
     });
   }, [liveTasks, agentsData, projectsData]);
@@ -2220,6 +2318,7 @@ function PortalApp() {
           element={
             <ProjectDetailPage
               projects={projectsData}
+              tasks={tasks}
               onProjectAction={handleProjectAction}
               projectActions={projectActions}
             />

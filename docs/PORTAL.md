@@ -4,7 +4,7 @@ Update notes (v0.2.0)
 - Agent: EULA gate, batch tasks, preferences, metrics via sysinfo, local limits.
 - Portal: SPA navigation, breadcrumbs, BPSW controls, version display.
 - Builds: Rust 1.88 base images for aws-sdk compatibility.
-- Known gaps: BPSW DET pipeline, portal detail pages on mock data, agent CI workflow.
+- Known gaps: BPSW DET pipeline, some portal detail pages still on mock data.
 
 Portal Roadmap
 
@@ -15,6 +15,8 @@ Current implementation (v0.2.0)
 - SPA layout with breadcrumbs and drill-down routes.
 - Home page is a single-scroll dashboard with anchor navigation on the left.
 - Projects page includes BPSW script sync + start controls.
+- Project status states: active, paused, completed, interrupted.
+- Stop button marks a project as interrupted; completed is set when queued/running tasks drain to zero.
 - Version is shown in the sidebar, topbar, and footer (from `VERSION`).
 
 Next steps (post-MVP)

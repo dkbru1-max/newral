@@ -135,6 +135,7 @@ Demo wordcount:
 - Agent supports EULA, batch tasks, preferences, metrics, and local limits.
 - Portal is SPA with breadcrumbs and BPSW controls.
 - Local Docker registry is used to avoid pulling base images on each run (`localhost:5000` + `docker-compose.local-registry.yml`).
+- Project status semantics: active, paused, completed when queue drains, interrupted on manual stop.
 
 ## Done / not done (and why)
 Done:
@@ -145,5 +146,5 @@ Done:
 
 Not done:
 - BPSW deterministic proof (DET pool): deferred for MVP to keep runtime small and cross-platform.
-- Portal detail pages wired to real backend data: currently using mock data to unblock UI work.
+- Some portal detail pages still rely on mock data; project detail now includes live task log.
 - Agent CI workflow: Windows agent release workflow exists in GitHub Actions (`agent-windows.yml`), Linux pipeline still pending.
