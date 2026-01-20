@@ -12,12 +12,18 @@ Purpose
 The portal is the public-facing window into Newral. MVP is HTTP-only with no auth, but the architecture anticipates secure access and role-based controls.
 
 Current implementation (v0.2.0)
-- SPA layout with breadcrumbs and drill-down routes.
+- SPA layout with breadcrumbs and drill-down routes (TypeScript/TSX).
 - Home page is a single-scroll dashboard with anchor navigation on the left.
 - Projects page includes BPSW script sync + start controls.
 - Project status states: active, paused, completed, interrupted.
 - Stop button marks a project as interrupted; completed is set when queued/running tasks drain to zero.
 - Version is shown in the sidebar, topbar, and footer (from `VERSION`).
+- shadcn/ui scaffolding is prepared (Tailwind config + components.json + utils).
+- Projects + Project Detail use shadcn base components (buttons, inputs, tables, cards) while keeping existing layout.
+- UI messaging emphasizes real-time updates (SSE summary + live logs).
+- shadcn base components are styled to defer to existing CSS variables so theme toggles remain consistent.
+- Task tables expose started/completed timestamps (blank when unset).
+- Filters/tabs use shadcn Select/Tabs (Radix) while preserving existing spacing and theme.
 
 Next steps (post-MVP)
 1) HTTPS

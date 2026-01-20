@@ -2025,7 +2025,11 @@ async fn fetch_tasks_batch(
         .filter_map(|task| task.task_id.parse::<i64>().ok())
         .collect();
     let update_sql = format!(
-        "UPDATE {}.tasks SET status = 'running', updated_at = NOW() WHERE id = ANY($1)",
+        "UPDATE {}.tasks \
+         SET status = 'running', \
+             updated_at = NOW(), \
+             started_at = COALESCE(started_at, NOW()) \
+         WHERE id = ANY($1)",
         schema
     );
     transaction

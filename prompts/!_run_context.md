@@ -71,7 +71,7 @@ Core pillars:
    - agent runtime, sandbox execution, GUI (feature `gui`), EULA, metrics, limits.
 6) `gateway/nginx.conf`
    - proxy rules, SSE config for scheduler stream.
-7) `frontend/src/App.jsx`
+7) `frontend/src/App.tsx`
    - SPA routing, BPSW actions, SSE live data.
 8) `docker-compose.yml`
    - service wiring, ports, env.
@@ -79,7 +79,13 @@ Core pillars:
 ## Stack
 - Rust microservices (axum, tokio, tokio-postgres, tracing, aws-sdk-s3).
 - Agent: Rust, optional GUI via `eframe/egui` (feature `gui`).
-- Frontend: React (Vite), custom CSS.
+- Frontend: React (Vite) with TypeScript/TSX, custom CSS.
+- UI scaffold: Tailwind config + shadcn/ui setup (`frontend/components.json`, `frontend/src/lib/utils.ts`).
+- Projects UI uses shadcn base components (buttons/inputs/tables/cards) with existing layout preserved.
+- Portal messaging highlights real-time updates via SSE summary and live logs.
+- shadcn base components defer to CSS variables so theme toggles apply consistently.
+- Task tables include started/completed timestamps from scheduler summaries.
+- Filters and settings tabs use shadcn Select/Tabs (Radix).
 - Infra: Postgres, Redis, Kafka, MinIO, NGINX gateway.
 - Deployment: Docker Compose now, Kubernetes-ready patterns (12-factor, health endpoints, env config).
 - Builders: Dockerfiles use Rust 1.88 to satisfy aws-sdk dependencies.
