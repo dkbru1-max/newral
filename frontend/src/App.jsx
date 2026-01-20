@@ -838,13 +838,17 @@ function ProjectsPage({
   bpswState,
   projectActions,
   sectionId,
-  projects
+  projects,
+  tasks
 }) {
   const bpswProject = projects.find((project) => project.name === "bpsw_hunter");
   const bpswStatus = bpswProject?.status ?? "inactive";
   const bpswActionState = bpswProject?.id ? projectActions[bpswProject.id] ?? {} : {};
   const bpswIsActive = bpswStatus === "active";
   const bpswActionLoading = Boolean(bpswActionState.loading);
+  const bpswRecentTasks = tasks
+    .filter((task) => task.project === "bpsw_hunter")
+    .slice(0, 6);
   return (
     <section className="section" id={sectionId}>
       <div className="section-header">
@@ -940,6 +944,32 @@ function ProjectsPage({
             >
               Pause
             </button>
+          </div>
+          <div className="table-card table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Recent BPSW tasks</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bpswRecentTasks.length === 0 ? (
+                  <tr>
+                    <td colSpan="2" className="muted">
+                      No recent BPSW tasks yet.
+                    </td>
+                  </tr>
+                ) : (
+                  bpswRecentTasks.map((task) => (
+                    <tr key={task.id}>
+                      <td>{task.id}</td>
+                      <td>{task.status}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -2022,7 +2052,10 @@ function PortalApp() {
           : "auto";
       return {
         ...task,
-        project: projectsData[index % projectsData.length]?.name ?? "Demo",
+        project:
+          task.project ??
+          projectsData[index % projectsData.length]?.name ??
+          "Demo",
         agent: agentId ?? "auto",
         priority: task.priority ?? "normal"
       };
@@ -2107,6 +2140,7 @@ function PortalApp() {
                 projectActions={projectActions}
                 sectionId="projects"
                 projects={projectsData}
+                tasks={tasks}
               />
               <AiModePage liveAiMode={liveAiMode} sectionId="ai-mode" />
               <LogCenterPage
@@ -2177,6 +2211,7 @@ function PortalApp() {
               bpswState={bpswState}
               projectActions={projectActions}
               projects={projectsData}
+              tasks={tasks}
             />
           }
         />

@@ -1,0 +1,58 @@
+services:
+  registry:
+    image: registry:2
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry_data:/var/lib/registry
+    networks:
+      - newral
+
+  postgres:
+    image: localhost:5000/library/postgres:17.7-bookworm
+
+  log-init:
+    image: localhost:5000/library/alpine:3.20
+
+  log-cleaner:
+    image: localhost:5000/library/alpine:3.20
+
+  redis:
+    image: localhost:5000/library/redis:7.4.7-bookworm
+
+  kafka:
+    image: localhost:5000/apache/kafka:4.1.1
+
+  minio:
+    image: localhost:5000/minio/minio:latest
+
+  gateway:
+    image: localhost:5000/library/nginx:1.27-alpine
+
+  identity-service:
+    build:
+      args:
+        REGISTRY_PREFIX: localhost:5000/
+
+  scheduler-service:
+    build:
+      args:
+        REGISTRY_PREFIX: localhost:5000/
+
+  validator-service:
+    build:
+      args:
+        REGISTRY_PREFIX: localhost:5000/
+
+  telemetry-service:
+    build:
+      args:
+        REGISTRY_PREFIX: localhost:5000/
+
+  frontend:
+    build:
+      args:
+        REGISTRY_PREFIX: localhost:5000/
+
+volumes:
+  registry_data:

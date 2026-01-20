@@ -1,9 +1,15 @@
 COMPOSE ?= docker compose
 
-.PHONY: up down ps logs fmt test lint migrate backup restore version version-patch version-minor version-major version-set
+.PHONY: up down ps logs fmt test lint migrate backup restore version version-patch version-minor version-major version-set registry-up registry-sync
 
 up:
 	$(COMPOSE) up -d
+
+registry-up:
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.local-registry.yml up -d registry
+
+registry-sync:
+	./scripts/registry_sync.sh
 
 down:
 	$(COMPOSE) down

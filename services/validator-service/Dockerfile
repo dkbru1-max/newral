@@ -1,4 +1,5 @@
-FROM rust:1.88-bookworm AS builder
+ARG REGISTRY_PREFIX=docker.io/
+FROM ${REGISTRY_PREFIX}library/rust:1.88-bookworm AS builder
 # Build the release binary.
 WORKDIR /app
 COPY services/common ./common
@@ -7,7 +8,7 @@ COPY services/validator-service/src ./validator-service/src
 WORKDIR /app/validator-service
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM ${REGISTRY_PREFIX}library/debian:bookworm-slim
 # Minimal runtime image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \

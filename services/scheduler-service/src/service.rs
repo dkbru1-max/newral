@@ -433,7 +433,8 @@ pub async fn request_task_batch(
         Some(types) if !types.is_empty() => Some(types),
         _ => db::fetch_agent_preferences(&mut db, agent.id, project.id)
             .await
-            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?,
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?
+            .filter(|types| !types.is_empty()),
     };
 
     let tasks = fetch_tasks_batch(
@@ -1461,13 +1462,10 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
             .await
             .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
 
-        if tasks.is_empty() {
-            tasks = db::fetch_recent_tasks(&mut db, &schema)
-                .await
-                .map_err(|err| {
-                    ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err)
-                })?;
-        }
+        let mut project_tasks = db::fetch_recent_tasks(&mut db, &schema, &project.name)
+            .await
+            .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;
+        tasks.append(&mut project_tasks);
 
         let buckets = db::task_completed_buckets(&mut db, &schema, bucket_hours, bucket_count)
             .await
@@ -1494,6 +1492,9 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
     }
 
     let tasks_total_24h = bucket_totals.iter().map(|point| point.value).sum();
+    if tasks.len() > 12 {
+        tasks.truncate(12);
+    }
     let agent_availability = db::agent_availability_snapshot(&mut db)
         .await
         .map_err(|err| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "db_error", err))?;

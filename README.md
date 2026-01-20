@@ -17,6 +17,26 @@
 
 Kafka is exposed on host port `9092`, but inside the Docker network use `kafka:19092`.
 
+## Local registry (offline pulls)
+Use a local registry so Docker pulls images from `localhost:5000` instead of `docker.io`.
+
+1) Start the local registry:
+```bash
+make registry-up
+```
+
+2) Sync external/base images into the local registry:
+```bash
+make registry-sync
+```
+
+3) Run the stack using the local-registry override:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-registry.yml up -d --build
+```
+
+Re-run `make registry-sync` when you change image tags or want to refresh from `docker.io`.
+
 Quality checks (per service Rust crates):
 ```bash
 make fmt

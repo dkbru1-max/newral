@@ -443,7 +443,11 @@ pub async fn schema_name_for_project(db: &mut Client, project: &Project) -> Resu
     Ok(schema)
 }
 
-pub async fn fetch_recent_tasks(db: &mut Client, schema: &str) -> Result<Vec<TaskSummary>, String> {
+pub async fn fetch_recent_tasks(
+    db: &mut Client,
+    schema: &str,
+    project: &str,
+) -> Result<Vec<TaskSummary>, String> {
     let sql = format!(
         "SELECT id, status FROM {}.tasks ORDER BY updated_at DESC, id DESC LIMIT 6",
         schema
@@ -457,6 +461,7 @@ pub async fn fetch_recent_tasks(db: &mut Client, schema: &str) -> Result<Vec<Tas
         .into_iter()
         .map(|row| TaskSummary {
             id: format!("task-{}", row.get::<_, i64>("id")),
+            project: project.to_string(),
             status: row.get::<_, String>("status"),
             priority: "normal".to_string(),
         })

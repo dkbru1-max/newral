@@ -112,6 +112,10 @@ Demo wordcount:
 
 ## Useful commands
 - Build & run: `docker compose up -d --build`
+- Local registry:
+  - Start registry: `make registry-up`
+  - Sync images: `make registry-sync`
+  - Run stack with local images: `docker compose -f docker-compose.yml -f docker-compose.local-registry.yml up -d --build`
 - Migrations: `make migrate`
 - Lint/test: `make fmt && make lint && make test`
 
@@ -130,6 +134,7 @@ Demo wordcount:
 - BPSW workflow wired (script sync + start) with real-range defaults.
 - Agent supports EULA, batch tasks, preferences, metrics, and local limits.
 - Portal is SPA with breadcrumbs and BPSW controls.
+- Local Docker registry is used to avoid pulling base images on each run (`localhost:5000` + `docker-compose.local-registry.yml`).
 
 ## Done / not done (and why)
 Done:
@@ -141,4 +146,4 @@ Done:
 Not done:
 - BPSW deterministic proof (DET pool): deferred for MVP to keep runtime small and cross-platform.
 - Portal detail pages wired to real backend data: currently using mock data to unblock UI work.
-- Agent CI workflow for Windows/Linux: not yet implemented; needs a dedicated GitHub Actions pipeline.
+- Agent CI workflow: Windows agent release workflow exists in GitHub Actions (`agent-windows.yml`), Linux pipeline still pending.

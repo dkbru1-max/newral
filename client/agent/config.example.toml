@@ -15,8 +15,9 @@ workspace_limit_mb = 512
 stdout_limit_mb = 10
 stderr_limit_mb = 10
 eula_accepted = false
-project_id = 1
-allowed_task_types = ["main_odds", "large_numbers", "chernick", "pomerance_lite", "pomerance_modular", "lambda_plus_one"]
+# Set project_id to the Admin Portal project ID (omit to use the demo project).
+# project_id = 1
+# allowed_task_types = ["main_odds", "large_numbers", "chernick", "pomerance_lite", "pomerance_modular", "lambda_plus_one"]
 cpu_limit_percent = 75.0
 gpu_limit_percent = 80.0
 ram_limit_percent = 70.0

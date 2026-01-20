@@ -145,6 +145,7 @@ pub struct AgentInfo {
 #[derive(Serialize)]
 pub struct TaskSummary {
     pub id: String,
+    pub project: String,
     pub status: String,
     pub priority: String,
 }

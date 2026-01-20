@@ -4,7 +4,7 @@ Update notes (v0.2.0)
 - Agent: EULA gate, batch tasks, preferences, metrics via sysinfo, local limits.
 - Portal: SPA navigation, breadcrumbs, BPSW controls, version display.
 - Builds: Rust 1.88 base images for aws-sdk compatibility.
-- Known gaps: BPSW DET pipeline, portal detail pages on mock data, agent CI workflow.
+- Known gaps: BPSW DET pipeline, portal detail pages on mock data.
 
 Client Agent (MVP)
 
@@ -34,6 +34,8 @@ Environment variables
 - `HEARTBEAT_INTERVAL_SECS` (default: `10`)
 - `POLL_INTERVAL_SECS` (default: `5`)
 - `RUNNER_SLEEP_SECS` (default: `2`)
+- `PROJECT_ID` (optional: set to the BPSW project ID shown in the Admin Portal)
+- `ALLOWED_TASK_TYPES` (optional: comma-separated list of BPSW task types)
 
 Security Principles
 - Tasks are executed through a runner interface, designed for future sandbox isolation.
@@ -56,3 +58,13 @@ Windows Install (simple)
 2) Copy `target\release\newral-agent.exe` to a folder in PATH.
 3) Create `client\agent\config.toml` or set env vars in PowerShell.
 4) Run: `newral-agent.exe`
+
+GitHub Actions (Windows Agent Release)
+- Workflow: `.github/workflows/agent-windows.yml`
+- Trigger: manual or tag `agent-v*`
+- Output: `newral-agent-windows.zip` artifact (optionally released on tag)
+
+Notes
+- If `PROJECT_ID` is unset, the agent requests tasks from the demo project.
+- If the project is not started in the Admin Portal, the agent will log `project_not_active`.
+- If `ALLOWED_TASK_TYPES` is set, it must include valid task types for the project; otherwise no tasks will match.
