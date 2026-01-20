@@ -2292,7 +2292,9 @@ mod gui {
                 .show(ctx, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         if let Some(texture) = &self.logo_texture {
-                            ui.image(texture, egui::vec2(48.0, 48.0));
+                            ui.add(
+                                egui::Image::new(texture).fit_to_exact_size(egui::vec2(48.0, 48.0)),
+                            );
                         }
                         ui.label(
                             egui::RichText::new("Agent")

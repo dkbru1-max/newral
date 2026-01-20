@@ -1465,7 +1465,7 @@ pub async fn build_live_summary(state: &AppState) -> Result<LiveSummary, Service
             && counts.running == 0
             && counts.completed > 0
         {
-            let _ = db::update_project_status(&mut db, project.id, "completed").await;
+            let _ = db::update_project_status(&*db, project.id, "completed").await;
         }
         queue.queued += counts.queued;
         queue.running += counts.running;

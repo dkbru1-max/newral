@@ -277,7 +277,7 @@ function DashboardPage({
     dashboard?.throughput ?? emptyDashboardSnapshot.throughput;
   return (
     <section className="section" id={sectionId}>
-      <div className="section-header">
+      <div className="section-header section-header-spaced section-header-center">
         <div>
           <h2>Dashboard</h2>
           <p>Snapshot of orchestration, trust, and throughput.</p>
@@ -717,7 +717,7 @@ function TasksPage({
           <h2>Tasks</h2>
           <p>Queue preview with filters and live status.</p>
         </div>
-        <div className="filter-row">
+        <div className="filter-row filter-row-aligned">
           <input
             className="input"
             placeholder="Search by task or project"
@@ -1132,7 +1132,7 @@ function ProjectDetailPage({ projects, tasks, onProjectAction, projectActions })
           </p>
         </div>
       </div>
-      <div className="section-header">
+      <div className="section-header log-header">
         <div>
           <h3>Live computation log</h3>
           <p>Real-time task activity with search and chronology.</p>

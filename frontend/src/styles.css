@@ -312,6 +312,25 @@ h3 {
   flex-wrap: wrap;
 }
 
+.section-header.section-header-spaced {
+  margin-top: 18px;
+}
+
+.section-header.section-header-center {
+  align-items: center;
+}
+
+.section-header.log-header {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.section-header.log-header .filter-row {
+  margin-top: 0;
+}
+
 .section {
   scroll-margin-top: 120px;
 }
@@ -851,6 +870,10 @@ th {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.filter-row.filter-row-aligned {
+  margin-top: 20px;
 }
 
 .input {
