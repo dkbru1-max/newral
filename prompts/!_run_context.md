@@ -86,6 +86,7 @@ Core pillars:
 - shadcn base components defer to CSS variables so theme toggles apply consistently.
 - Task tables include started/completed timestamps from scheduler summaries.
 - Filters and settings tabs use shadcn Select/Tabs (Radix).
+- shadcn MCP server is configured in Codex for UI scaffolding and examples.
 - Infra: Postgres, Redis, Kafka, MinIO, NGINX gateway.
 - Deployment: Docker Compose now, Kubernetes-ready patterns (12-factor, health endpoints, env config).
 - Builders: Dockerfiles use Rust 1.88 to satisfy aws-sdk dependencies.

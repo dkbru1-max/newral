@@ -24,6 +24,7 @@ Current implementation (v0.2.0)
 - shadcn base components are styled to defer to existing CSS variables so theme toggles remain consistent.
 - Task tables expose started/completed timestamps (blank when unset).
 - Filters/tabs use shadcn Select/Tabs (Radix) while preserving existing spacing and theme.
+- shadcn MCP server is configured in Codex for faster UI scaffolding and examples.
 
 Next steps (post-MVP)
 1) HTTPS
