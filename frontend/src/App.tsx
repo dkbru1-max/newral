@@ -8,6 +8,25 @@ import {
   useNavigate,
   useParams
 } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const baseKpis = [
   { label: "Connected Agents", trend: "live" },
@@ -51,10 +70,10 @@ const formatGb = (valueGb, valueMb) => {
 
 const initialAgents = [];
 
-const initialTasks = [
-  { id: "task-1001", status: "queued", priority: "high" },
-  { id: "task-1002", status: "running", priority: "normal" },
-  { id: "task-1003", status: "waiting", priority: "low" }
+const initialTasks: TaskSummary[] = [
+  { id: "task-1001", status: "queued", priority: "high", started_at: null, completed_at: null },
+  { id: "task-1002", status: "running", priority: "normal", started_at: null, completed_at: null },
+  { id: "task-1003", status: "waiting", priority: "low", started_at: null, completed_at: null }
 ];
 
 const seedProjects = [
@@ -107,6 +126,17 @@ const integrationTargets = [
   { name: "MinIO", status: "connected", note: "object storage" },
   { name: "Slack", status: "pending", note: "alerts" }
 ];
+
+type TaskSummary = {
+  id: string;
+  project?: string;
+  status: string;
+  priority?: string;
+  updated_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  agent?: string;
+};
 
 const bpswTaskTypes = [
   "main_odds",
@@ -220,6 +250,9 @@ function Layout({
           <div>
             <Breadcrumbs liveAgents={liveAgents} liveTasks={liveTasks} projects={projects} />
             <h2>Distributed compute, policy-first.</h2>
+            <p className="topbar-subtitle">
+              Real-time admin telemetry with live task and agent updates.
+            </p>
           </div>
           <div className="topbar-actions">
             {portalVersion && <span className="version-chip">v{portalVersion}</span>}
@@ -288,22 +321,22 @@ function DashboardPage({
       <div className="metric-grid">
         {summaryLoaded
           ? kpis.map((metric) => (
-              <div key={metric.label} className="metric-card">
+              <Card key={metric.label} className="metric-card">
                 <span>{metric.label}</span>
                 <strong>{metric.value}</strong>
                 <em>{metric.trend}</em>
-              </div>
+              </Card>
             ))
           : kpis.map((metric) => (
-              <div key={metric.label} className="metric-card skeleton-card">
+              <Card key={metric.label} className="metric-card skeleton-card">
                 <span className="skeleton-line"></span>
                 <strong className="skeleton-line"></strong>
                 <em className="skeleton-line"></em>
-              </div>
+              </Card>
             ))}
       </div>
       <div className="chart-grid">
-        <div className="chart-card">
+        <Card className="chart-card">
           <div className="chart-header">
             <h3>Tasks (last 24h)</h3>
             <span>{dashboard?.tasks_total_24h ?? 0} completed</span>
@@ -327,8 +360,8 @@ function DashboardPage({
               </div>
             ))}
           </div>
-        </div>
-        <div className="chart-card">
+        </Card>
+        <Card className="chart-card">
           <div className="chart-header">
             <h3>Agent availability</h3>
             <span>{totalAgents} total</span>
@@ -358,8 +391,8 @@ function DashboardPage({
             <span>Idle: {availability.idle}</span>
             <span>Blocked: {availability.blocked}</span>
           </div>
-        </div>
-        <div className="chart-card">
+        </Card>
+        <Card className="chart-card">
           <div className="chart-header">
             <h3>Storage IO</h3>
             <span>MB totals</span>
@@ -406,8 +439,8 @@ function DashboardPage({
             <span>{storage.disk_read_mb.toFixed(1)} MB read</span>
             <span>{storage.disk_write_mb.toFixed(1)} MB write</span>
           </div>
-        </div>
-        <div className="chart-card">
+        </Card>
+        <Card className="chart-card">
           <div className="chart-header">
             <h3>Throughput</h3>
             <span>live</span>
@@ -422,8 +455,8 @@ function DashboardPage({
               <span>completed / hour</span>
             </div>
           </div>
-        </div>
-        <div className="chart-card">
+        </Card>
+        <Card className="chart-card">
           <div className="chart-header">
             <h3>Trust</h3>
             <span>policy</span>
@@ -438,18 +471,18 @@ function DashboardPage({
               <span>total agents</span>
             </div>
           </div>
-        </div>
+        </Card>
       </div>
-      <div className="vision-card">
+      <Card className="vision-card">
         <h3>Roadmap / Vision</h3>
         <ul>
           <li>Security-first compute with continuous verification.</li>
           <li>Multi-region orchestration with policy guardrails.</li>
           <li>AI-guided scheduling with deterministic overrides.</li>
         </ul>
-      </div>
+      </Card>
       <div className="monitor-grid">
-        <div className="monitor-card">
+        <Card className="monitor-card">
           <h3>Metrics preview</h3>
           <div className="bar-list">
             <div>
@@ -474,7 +507,7 @@ function DashboardPage({
           <p className="muted">
             Running: {liveLoad.running} · Queued: {liveLoad.queued} · Throughput/min: {liveLoad.completed_last_min}
           </p>
-        </div>
+        </Card>
       </div>
     </section>
   );
@@ -566,48 +599,50 @@ function AgentsPage({ agents, summaryLoaded, sectionId }) {
         <div className="chip">Auto heartbeat</div>
       </div>
       <div className="table-card table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Node</th>
-              <th>Status</th>
-              <th>CPU</th>
-              <th>RAM</th>
-              <th>GPU</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Node</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>CPU</TableHead>
+              <TableHead>RAM</TableHead>
+              <TableHead>GPU</TableHead>
+              <TableHead>Details</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {summaryLoaded && agents.length === 0 ? (
-              <tr>
-                <td colSpan="6" className="muted">
+              <TableRow>
+                <TableCell colSpan={6} className="muted">
                   No agents connected.
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               agents.map((agent) => (
-                <tr key={agent.id}>
-                  <td>{agent.id}</td>
-                  <td>
+                <TableRow key={agent.id}>
+                  <TableCell>{agent.id}</TableCell>
+                  <TableCell>
                     <span className={`status-dot ${agent.status}`} title={agent.status}></span>
                     <span className={`status-label ${agent.status}`}>{agent.status}</span>
-                  </td>
-                  <td>{agent.hardware?.cpu_model ?? "—"}</td>
-                  <td>
+                  </TableCell>
+                  <TableCell>{agent.hardware?.cpu_model ?? "—"}</TableCell>
+                  <TableCell>
                     {formatGb(
                       agent.hardware?.ram_total_gb,
                       agent.hardware?.ram_total_mb
                     )}
-                  </td>
-                  <td>{agent.hardware?.gpu_model ?? "—"}</td>
-                  <td>
-                    <Link to={`/agents/${agent.id}`} className="link">View</Link>
-                  </td>
-                </tr>
+                  </TableCell>
+                  <TableCell>{agent.hardware?.gpu_model ?? "—"}</TableCell>
+                  <TableCell>
+                    <Link to={`/agents/${agent.id}`} className="link">
+                      View
+                    </Link>
+                  </TableCell>
+                </TableRow>
               ))
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </section>
   );
@@ -629,21 +664,21 @@ function AgentDetailPage({ agents }) {
         <div className="chip">Details</div>
       </div>
       <div className="card-grid">
-        <div className="stat-card">
+        <Card className="stat-card">
           <h3>Status</h3>
           <p className="muted">{agent.status}</p>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Last seen</h3>
           <p className="muted">{agent.last_seen ?? "unknown"}</p>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Blocked</h3>
           <p className="muted">{agent.blocked ? "yes" : "no"}</p>
-        </div>
+        </Card>
       </div>
       <div className="card-grid">
-        <div className="stat-card">
+        <Card className="stat-card">
           <h3>Hardware</h3>
           <p className="muted">
             CPU: {agent.hardware?.cpu_model ?? "—"} · RAM:{" "}
@@ -659,8 +694,8 @@ function AgentDetailPage({ agents }) {
               agent.hardware?.disk_total_mb
             )}
           </p>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Recent metrics</h3>
           <p className="muted">
             CPU {agent.metrics?.cpu_load?.toFixed(1) ?? "—"}% · RAM{" "}
@@ -672,16 +707,20 @@ function AgentDetailPage({ agents }) {
             )}{" "}
             · Net {agent.metrics?.net_rx_bytes ?? "—"} B
           </p>
-        </div>
+        </Card>
       </div>
       <div className="card-grid">
-        <div className="stat-card">
+        <Card className="stat-card">
           <h3>Actions</h3>
           <div className="pill-row">
-            <button className="btn ghost">Block agent</button>
-            <button className="btn ghost">Message</button>
+            <Button variant="ghost" className="btn ghost">
+              Block agent
+            </Button>
+            <Button variant="ghost" className="btn ghost">
+              Message
+            </Button>
           </div>
-        </div>
+        </Card>
       </div>
     </section>
   );
@@ -717,68 +756,75 @@ function TasksPage({
           <h2>Tasks</h2>
           <p>Queue preview with filters and live status.</p>
         </div>
-        <div className="filter-row filter-row-aligned">
-          <input
+        <div className="filter-row filter-row-aligned log-controls">
+          <Input
             className="input"
             placeholder="Search by task or project"
             value={taskQuery}
             onChange={(event) => onQueryChange(event.target.value)}
           />
-          <select
-            className="input"
-            value={taskStatus}
-            onChange={(event) => onStatusChange(event.target.value)}
-          >
-            <option value="all">All</option>
-            <option value="queued">Queued</option>
-            <option value="running">Running</option>
-            <option value="done">Done</option>
-            <option value="waiting">Waiting</option>
-          </select>
+          <Select value={taskStatus} onValueChange={onStatusChange}>
+            <SelectTrigger className="input">
+              <SelectValue placeholder="All" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="queued">Queued</SelectItem>
+              <SelectItem value="running">Running</SelectItem>
+              <SelectItem value="done">Done</SelectItem>
+              <SelectItem value="waiting">Waiting</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <div className="table-card table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Task</th>
-              <th>Project</th>
-              <th>Agent</th>
-              <th>Status</th>
-              <th>Priority</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Task</TableHead>
+              <TableHead>Project</TableHead>
+              <TableHead>Agent</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Priority</TableHead>
+              <TableHead>Started</TableHead>
+              <TableHead>Completed</TableHead>
+              <TableHead>Details</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {summaryLoaded && visibleRows.length === 0 ? (
-              <tr>
-                <td colSpan="6" className="muted">
+              <TableRow>
+                <TableCell colSpan={8} className="muted">
                   No tasks matching the filter.
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               visibleRows.map((task) => (
-                <tr key={task.id}>
-                  <td>{task.id}</td>
-                  <td>{task.project}</td>
-                  <td>{task.agent}</td>
-                  <td>
+                <TableRow key={task.id}>
+                  <TableCell>{task.id}</TableCell>
+                  <TableCell>{task.project}</TableCell>
+                  <TableCell>{task.agent}</TableCell>
+                  <TableCell>
                     <span className={`status-label ${task.status}`}>{task.status}</span>
-                  </td>
-                  <td>{task.priority}</td>
-                  <td>
-                  <Link to={`/tasks/${task.id}`} className="link">View</Link>
-                </td>
-              </tr>
-            ))
-          )}
-          </tbody>
-        </table>
+                  </TableCell>
+                  <TableCell>{task.priority}</TableCell>
+                  <TableCell className="mono">{task.started_at ?? "—"}</TableCell>
+                  <TableCell className="mono">{task.completed_at ?? "—"}</TableCell>
+                  <TableCell>
+                    <Link to={`/tasks/${task.id}`} className="link">
+                      View
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
       </div>
       {filteredTasks.length > visibleRows.length && (
-        <button className="btn ghost" onClick={onLoadMore}>
+        <Button variant="ghost" className="btn ghost" onClick={onLoadMore}>
           Load more
-        </button>
+        </Button>
       )}
     </section>
   );
@@ -815,12 +861,16 @@ function TaskDetailPage({ tasks }) {
       </div>
       <div className="card-grid">
         <div className="stat-card">
-          <h3>Result</h3>
-          <p className="muted">Awaiting validation.</p>
+          <h3>Started</h3>
+          <p className="muted mono">{task.started_at ?? "—"}</p>
         </div>
         <div className="stat-card">
-          <h3>History</h3>
-          <p className="muted">Issued 5m ago, running on {task.agent}.</p>
+          <h3>Completed</h3>
+          <p className="muted mono">{task.completed_at ?? "—"}</p>
+        </div>
+        <div className="stat-card">
+          <h3>Updated</h3>
+          <p className="muted mono">{task.updated_at ?? "—"}</p>
         </div>
       </div>
     </section>
@@ -858,12 +908,12 @@ function ProjectsPage({
           <h2>Projects</h2>
           <p>Portfolio view for active and staged workloads.</p>
         </div>
-        <button className="btn ghost" onClick={onCreateProject}>
+        <Button variant="ghost" className="btn ghost" onClick={onCreateProject}>
           Create project
-        </button>
+        </Button>
       </div>
       <div className="card-grid">
-        <div className="stat-card">
+        <Card className="stat-card">
           <h3>BPSW Hunter</h3>
           <p className="muted">Launch distributed search tasks from the portal.</p>
           <div className="pill-row">
@@ -876,7 +926,7 @@ function ProjectsPage({
           <div className="form-grid">
             <label className="field">
               <span>Start (optional)</span>
-              <input
+              <Input
                 className="input"
                 value={bpswForm.start}
                 placeholder="100000000000000000001"
@@ -887,7 +937,7 @@ function ProjectsPage({
             </label>
             <label className="field">
               <span>End (optional)</span>
-              <input
+              <Input
                 className="input"
                 value={bpswForm.end}
                 placeholder="100000000000000000501"
@@ -898,7 +948,7 @@ function ProjectsPage({
             </label>
             <label className="field">
               <span>Chunk size</span>
-              <input
+              <Input
                 className="input"
                 value={bpswForm.chunkSize}
                 onChange={(event) =>
@@ -925,115 +975,125 @@ function ProjectsPage({
           )}
           {bpswActionState.error && <p className="error">{bpswActionState.error}</p>}
           <div className="form-actions">
-            <button
+            <Button
+              variant="ghost"
               className="btn ghost"
               onClick={onSyncBpsw}
               disabled={bpswState.syncing || bpswActionLoading}
             >
               {bpswState.syncing ? "Syncing..." : "Sync scripts"}
-            </button>
-            <button
+            </Button>
+            <Button
               className="btn primary"
               onClick={onStartBpsw}
               disabled={bpswState.loading || bpswActionLoading}
             >
               {bpswState.loading ? "Starting..." : bpswIsActive ? "Stop" : "Start"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
               className="btn ghost"
               onClick={() => bpswProject && onProjectAction(bpswProject, "pause")}
               disabled={!bpswProject || bpswPausedDisabled || bpswActionLoading}
             >
               Pause
-            </button>
+            </Button>
           </div>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Recent BPSW tasks</h3>
           <p className="muted">Live queue snapshots for the active project.</p>
           <div className="table-card table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Task</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Task</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>Completed</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {bpswRecentTasks.length === 0 ? (
-                  <tr>
-                    <td colSpan="2" className="muted">
+                  <TableRow>
+                    <TableCell colSpan={4} className="muted">
                       No recent BPSW tasks yet.
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ) : (
                   bpswRecentTasks.map((task) => (
-                    <tr key={task.id}>
-                      <td>{task.id}</td>
-                      <td>{task.status}</td>
-                    </tr>
+                    <TableRow key={task.id}>
+                      <TableCell>{task.id}</TableCell>
+                      <TableCell>{task.status}</TableCell>
+                      <TableCell className="mono">{task.started_at ?? "—"}</TableCell>
+                      <TableCell className="mono">{task.completed_at ?? "—"}</TableCell>
+                    </TableRow>
                   ))
                 )}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
-        </div>
+        </Card>
       </div>
       <div className="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Project</th>
-              <th>Status</th>
-              <th>Owner</th>
-              <th>Actions</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>Project</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Owner</TableHead>
+              <TableHead>Actions</TableHead>
+              <TableHead>Details</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {projects.map((project) => {
               const actionState = project.id ? projectActions[project.id] ?? {} : {};
               const isActive = project.status === "active";
               const actionLabel = isActive ? "Stop" : "Start";
               const action = isActive ? "stop" : "start";
               return (
-              <tr key={project.name}>
-                <td className="mono">{project.id ?? "—"}</td>
-                <td>{project.name}</td>
-                <td className="status-label">{project.status}</td>
-                <td>{project.owner}</td>
-                <td>
-                  <div className="pill-row">
-                    <button
-                      className="btn ghost"
-                      onClick={() => onProjectAction(project, action)}
-                      disabled={!project.id || actionState.loading}
-                    >
-                      {actionLabel}
-                    </button>
-                    <button
-                      className="btn ghost"
-                      onClick={() => onProjectAction(project, "pause")}
-                      disabled={
-                        !project.id ||
-                        project.status === "completed" ||
-                        project.status === "interrupted" ||
-                        actionState.loading
-                      }
-                    >
-                      Pause
-                    </button>
-                  </div>
-                </td>
-                <td>
-                  <Link to={projectPath(project.name)} className="link">View details</Link>
-                </td>
-              </tr>
+                <TableRow key={project.name}>
+                  <TableCell className="mono">{project.id ?? "—"}</TableCell>
+                  <TableCell>{project.name}</TableCell>
+                  <TableCell className="status-label">{project.status}</TableCell>
+                  <TableCell>{project.owner}</TableCell>
+                  <TableCell>
+                    <div className="pill-row">
+                      <Button
+                        variant="ghost"
+                        className="btn ghost"
+                        onClick={() => onProjectAction(project, action)}
+                        disabled={!project.id || actionState.loading}
+                      >
+                        {actionLabel}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="btn ghost"
+                        onClick={() => onProjectAction(project, "pause")}
+                        disabled={
+                          !project.id ||
+                          project.status === "completed" ||
+                          project.status === "interrupted" ||
+                          actionState.loading
+                        }
+                      >
+                        Pause
+                      </Button>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Link to={projectPath(project.name)} className="link">
+                      View details
+                    </Link>
+                  </TableCell>
+                </TableRow>
               );
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </section>
   );
@@ -1078,35 +1138,37 @@ function ProjectDetailPage({ projects, tasks, onProjectAction, projectActions })
         <div className="chip">{project.status}</div>
       </div>
       <div className="card-grid">
-        <div className="stat-card">
+        <Card className="stat-card">
           <h3>Project ID</h3>
           <p className="muted mono">{project.id ?? "—"}</p>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Owner</h3>
           <p className="muted">{project.owner}</p>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Project GUID</h3>
           <p className="muted mono">{project.guid ?? "—"}</p>
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Storage Prefix</h3>
           <p className="muted mono">{project.storage_prefix ?? "—"}</p>
-        </div>
+        </Card>
       </div>
       <div className="card-grid">
-        <div className="stat-card">
+        <Card className="stat-card">
           <h3>Actions</h3>
           <div className="pill-row">
-            <button
+            <Button
+              variant="ghost"
               className="btn ghost"
               onClick={() => onProjectAction(project, action)}
               disabled={!project.id || actionState.loading}
             >
               {actionLabel}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
               className="btn ghost"
               onClick={() => onProjectAction(project, "pause")}
               disabled={
@@ -1117,12 +1179,12 @@ function ProjectDetailPage({ projects, tasks, onProjectAction, projectActions })
               }
             >
               Pause
-            </button>
+            </Button>
           </div>
           {actionState.error && <p className="error">{actionState.error}</p>}
           {actionState.info && <p className="muted">{actionState.info}</p>}
-        </div>
-        <div className="stat-card">
+        </Card>
+        <Card className="stat-card">
           <h3>Project metadata</h3>
           <p className="muted">
             {project.description ?? "No description provided."}
@@ -1130,60 +1192,65 @@ function ProjectDetailPage({ projects, tasks, onProjectAction, projectActions })
           <p className="muted">
             Created at: {project.created_at ?? "—"}
           </p>
-        </div>
+        </Card>
       </div>
       <div className="section-header log-header">
         <div>
           <h3>Live computation log</h3>
           <p>Real-time task activity with search and chronology.</p>
         </div>
-        <div className="filter-row">
-          <input
+        <div className="filter-row log-controls">
+          <Input
             className="input"
             placeholder="Search task ID"
             value={detailQuery}
             onChange={(event) => setDetailQuery(event.target.value)}
           />
-          <select
-            className="input"
-            value={detailStatus}
-            onChange={(event) => setDetailStatus(event.target.value)}
-          >
-            <option value="all">All</option>
-            <option value="queued">Queued</option>
-            <option value="running">Running</option>
-            <option value="done">Done</option>
-            <option value="waiting">Waiting</option>
-          </select>
+          <Select value={detailStatus} onValueChange={setDetailStatus}>
+            <SelectTrigger className="input">
+              <SelectValue placeholder="All" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="queued">Queued</SelectItem>
+              <SelectItem value="running">Running</SelectItem>
+              <SelectItem value="done">Done</SelectItem>
+              <SelectItem value="waiting">Waiting</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <div className="table-card table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Task</th>
-              <th>Status</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Task</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Started</TableHead>
+              <TableHead>Completed</TableHead>
+              <TableHead>Updated</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {projectTasks.length === 0 ? (
-              <tr>
-                <td colSpan="3" className="muted">
+              <TableRow>
+                <TableCell colSpan={5} className="muted">
                   No tasks yet for this project.
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               projectTasks.map((task) => (
-                <tr key={task.id}>
-                  <td>{task.id}</td>
-                  <td>{task.status}</td>
-                  <td className="mono">{task.updated_at ?? "—"}</td>
-                </tr>
+                <TableRow key={task.id}>
+                  <TableCell>{task.id}</TableCell>
+                  <TableCell>{task.status}</TableCell>
+                  <TableCell className="mono">{task.started_at ?? "—"}</TableCell>
+                  <TableCell className="mono">{task.completed_at ?? "—"}</TableCell>
+                  <TableCell className="mono">{task.updated_at ?? "—"}</TableCell>
+                </TableRow>
               ))
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </section>
   );
@@ -1235,45 +1302,46 @@ function LogCenterPage({
         </div>
         <div className="pill-row">
           {Object.keys(logFilters).map((level) => (
-            <button
+            <Button
               key={level}
+              variant="ghost"
               className={`chip ${logFilters[level] ? "active" : ""}`}
               onClick={() => onToggleFilter(level)}
               aria-pressed={logFilters[level]}
             >
               {level}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
       <div className="table-card table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Level</th>
-              <th>Source</th>
-              <th>Message</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Level</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>Message</TableHead>
+              <TableHead>Time</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {visibleRows.map((entry) => (
-              <tr key={entry.id} className={`log-row ${entry.level}`}>
-                <td>
+              <TableRow key={entry.id} className={`log-row ${entry.level}`}>
+                <TableCell>
                   <span className={`log-pill ${entry.level}`}>{entry.level}</span>
-                </td>
-                <td>{entry.source}</td>
-                <td>{entry.message}</td>
-                <td>{entry.time}</td>
-              </tr>
+                </TableCell>
+                <TableCell>{entry.source}</TableCell>
+                <TableCell>{entry.message}</TableCell>
+                <TableCell>{entry.time}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       {filteredLogs.length > visibleRows.length && (
-        <button className="btn ghost" onClick={onLoadMore}>
+        <Button variant="ghost" className="btn ghost" onClick={onLoadMore}>
           Load more
-        </button>
+        </Button>
       )}
     </section>
   );
@@ -1289,65 +1357,67 @@ function SettingsPage({ settingsTab, onTabChange, sectionId }) {
         </div>
         <div className="chip">Role-based access</div>
       </div>
-      <div className="tab-row">
-        {[
-          { id: "general", label: "General" },
-          { id: "security", label: "Security" },
-          { id: "access", label: "Access" }
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            className={`tab ${settingsTab === tab.id ? "active" : ""}`}
-            onClick={() => onTabChange(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      <div className="card-grid">
-        {settingsTab === "general" && (
-          <>
-            <div className="stat-card">
+      <Tabs value={settingsTab} onValueChange={onTabChange}>
+        <TabsList>
+          <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
+          <TabsTrigger value="access">Access</TabsTrigger>
+        </TabsList>
+        <TabsContent value="general">
+          <div className="card-grid">
+            <Card className="stat-card">
               <h3>Organization</h3>
               <p className="muted">Newral Labs, internal staging.</p>
-              <button className="btn ghost">Edit profile</button>
-            </div>
-            <div className="stat-card">
+              <Button variant="ghost" className="btn ghost">
+                Edit profile
+              </Button>
+            </Card>
+            <Card className="stat-card">
               <h3>Resource Limits</h3>
               <p className="muted">Max concurrent tasks: 10</p>
-              <button className="btn ghost">Adjust limits</button>
-            </div>
-          </>
-        )}
-        {settingsTab === "security" && (
-          <>
-            <div className="stat-card">
+              <Button variant="ghost" className="btn ghost">
+                Adjust limits
+              </Button>
+            </Card>
+          </div>
+        </TabsContent>
+        <TabsContent value="security">
+          <div className="card-grid">
+            <Card className="stat-card">
               <h3>API Keys</h3>
               <p className="muted">Rotate service keys every 30 days.</p>
-              <button className="btn ghost">Manage keys</button>
-            </div>
-            <div className="stat-card">
+              <Button variant="ghost" className="btn ghost">
+                Manage keys
+              </Button>
+            </Card>
+            <Card className="stat-card">
               <h3>Certificates</h3>
               <p className="muted">TLS required for external agents.</p>
-              <button className="btn ghost">Upload certs</button>
-            </div>
-          </>
-        )}
-        {settingsTab === "access" && (
-          <>
-            <div className="stat-card">
+              <Button variant="ghost" className="btn ghost">
+                Upload certs
+              </Button>
+            </Card>
+          </div>
+        </TabsContent>
+        <TabsContent value="access">
+          <div className="card-grid">
+            <Card className="stat-card">
               <h3>Users</h3>
               <p className="muted">14 active users, 3 admins.</p>
-              <button className="btn ghost">Invite user</button>
-            </div>
-            <div className="stat-card">
+              <Button variant="ghost" className="btn ghost">
+                Invite user
+              </Button>
+            </Card>
+            <Card className="stat-card">
               <h3>Roles</h3>
               <p className="muted">Admin, Operator, Observer.</p>
-              <button className="btn ghost">Edit roles</button>
-            </div>
-          </>
-        )}
-      </div>
+              <Button variant="ghost" className="btn ghost">
+                Edit roles
+              </Button>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
     </section>
   );
 }
@@ -1364,11 +1434,11 @@ function IntegrationsPage({ sectionId }) {
       </div>
       <div className="card-grid">
         {integrationTargets.map((integration) => (
-          <div key={integration.name} className="stat-card">
+          <Card key={integration.name} className="stat-card">
             <h3>{integration.name}</h3>
             <p className="muted">{integration.note}</p>
             <span className={`pill ${integration.status}`}>{integration.status}</span>
-          </div>
+          </Card>
         ))}
       </div>
     </section>
@@ -1389,7 +1459,7 @@ function SystemHealthPage({ health, healthLoaded, sectionId }) {
         {healthTargets.map((service) => {
           const status = health[service.id]?.status ?? "loading";
           return (
-            <div key={service.id} className="health-card">
+            <Card key={service.id} className="health-card">
               <div>
                 <h3>{service.name}</h3>
                 <p className="muted">{service.base}</p>
@@ -1397,16 +1467,16 @@ function SystemHealthPage({ health, healthLoaded, sectionId }) {
               <span className={`pill ${healthLoaded ? status : "loading"}`}>
                 {healthLoaded ? status : "loading"}
               </span>
-            </div>
+            </Card>
           );
         })}
-        <div className="health-card">
+        <Card className="health-card">
           <div>
             <h3>Object Storage</h3>
             <p className="muted">MinIO /data</p>
           </div>
           <span className="pill ok">ok</span>
-        </div>
+        </Card>
       </div>
     </section>
   );
@@ -1418,7 +1488,7 @@ function PortalApp() {
   const [healthLoaded, setHealthLoaded] = useState(false);
   const [liveAgents, setLiveAgents] = useState(initialAgents);
   const [agentsData, setAgentsData] = useState(initialAgents);
-  const [liveTasks, setLiveTasks] = useState(initialTasks);
+  const [liveTasks, setLiveTasks] = useState<TaskSummary[]>(initialTasks);
   const [liveQueue, setLiveQueue] = useState({
     queued: 0,
     running: 0,
@@ -2142,7 +2212,7 @@ function PortalApp() {
   });
 
   const tasks = useMemo(() => {
-    return liveTasks.map((task, index) => {
+    return (liveTasks as TaskSummary[]).map((task, index) => {
       const agentId =
         agentsData.length > 0
           ? agentsData[index % agentsData.length]?.id
@@ -2155,7 +2225,9 @@ function PortalApp() {
           "Demo",
         agent: agentId ?? "auto",
         priority: task.priority ?? "normal",
-        updated_at: task.updated_at
+        updated_at: task.updated_at,
+        started_at: task.started_at ?? null,
+        completed_at: task.completed_at ?? null
       };
     });
   }, [liveTasks, agentsData, projectsData]);

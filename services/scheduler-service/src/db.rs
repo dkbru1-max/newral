@@ -104,7 +104,18 @@ pub fn task_select_next_sql(schema: &str) -> String {
 
 pub fn task_update_status_sql(schema: &str) -> String {
     format!(
-        "UPDATE {}.tasks SET status = $1, updated_at = NOW() WHERE id = $2",
+        "UPDATE {}.tasks \
+         SET status = $1, \
+             updated_at = NOW(), \
+             started_at = CASE \
+                 WHEN started_at IS NULL AND $1 IN ('running', 'done', 'completed') THEN NOW() \
+                 ELSE started_at \
+             END, \
+             completed_at = CASE \
+                 WHEN $1 IN ('done', 'completed') THEN NOW() \
+                 ELSE completed_at \
+             END \
+         WHERE id = $2",
         schema
     )
 }
@@ -449,8 +460,13 @@ pub async fn fetch_recent_tasks(
     project: &str,
 ) -> Result<Vec<TaskSummary>, String> {
     let sql = format!(
-        "SELECT id, status, to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS updated_at \
-         FROM {}.tasks ORDER BY updated_at DESC, id DESC LIMIT 6",
+        "SELECT id, \
+            status, \
+            to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS updated_at, \
+            to_char(started_at, 'YYYY-MM-DD HH24:MI:SS') AS started_at, \
+            to_char(completed_at, 'YYYY-MM-DD HH24:MI:SS') AS completed_at \
+         FROM {}.tasks \
+         ORDER BY updated_at DESC, id DESC LIMIT 6",
         schema
     );
     let rows = db
@@ -466,6 +482,8 @@ pub async fn fetch_recent_tasks(
             status: row.get::<_, String>("status"),
             priority: "normal".to_string(),
             updated_at: row.get("updated_at"),
+            started_at: row.get("started_at"),
+            completed_at: row.get("completed_at"),
         })
         .collect())
 }
