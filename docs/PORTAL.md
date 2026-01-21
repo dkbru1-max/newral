@@ -25,6 +25,8 @@ Current implementation (v0.2.0)
 - Task tables expose started/completed timestamps (blank when unset).
 - Filters/tabs use shadcn Select/Tabs (Radix) while preserving existing spacing and theme.
 - shadcn MCP server is configured in Codex for faster UI scaffolding and examples.
+- Basic Memory MCP server is configured in Codex for persistent project context (project: newral, storage: /home/user/work/mcp-basic-memory/newral).
+- Connected MCP servers: shadcn, basic-memory.
 
 Next steps (post-MVP)
 1) HTTPS

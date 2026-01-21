@@ -87,6 +87,8 @@ Core pillars:
 - Task tables include started/completed timestamps from scheduler summaries.
 - Filters and settings tabs use shadcn Select/Tabs (Radix).
 - shadcn MCP server is configured in Codex for UI scaffolding and examples.
+- Basic Memory MCP server is configured in Codex for persistent project context (project: newral, storage: /home/user/work/mcp-basic-memory/newral).
+- Connected MCP servers: shadcn, basic-memory.
 - Infra: Postgres, Redis, Kafka, MinIO, NGINX gateway.
 - Deployment: Docker Compose now, Kubernetes-ready patterns (12-factor, health endpoints, env config).
 - Builders: Dockerfiles use Rust 1.88 to satisfy aws-sdk dependencies.
