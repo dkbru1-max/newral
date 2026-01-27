@@ -99,4 +99,10 @@ curl -sS -X POST http://localhost:8084/v1/event -H 'Content-Type: application/js
 ```
 
 ## Windows agent build (GitHub Actions)
-Planned: CI workflow for Windows/Linux agent builds is not implemented yet.
+Windows agent builds are implemented via GitHub Actions.
+
+- Workflow: **Build Windows Agent (Release)** (`.github/workflows/agent-windows.yml`)
+- Triggers: `workflow_dispatch` and tags `agent-v*`
+- Outputs: `newral-agent-windows.zip` artifact (and release asset on tag)
+
+Linux agent CI is still planned.
